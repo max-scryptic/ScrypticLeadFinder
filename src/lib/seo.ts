@@ -53,6 +53,13 @@ export const pages = {
     changeFrequency: "yearly",
     priority: 0.5,
   },
+  sources: {
+    path: "/sources",
+    title: "Sources",
+    description:
+      "Every lead source Scryptic Lead Finder collects from or plans to, with the latest signals fetched by each collector's scheduled run.",
+    noIndex: true,
+  },
   login: {
     path: "/login",
     title: "Login",
