@@ -61,6 +61,68 @@ function basicAuth(key: string) {
   return `Basic ${Buffer.from(`${key}:`).toString("base64")}`
 }
 
+/** Reads a key, dropping the whitespace and quotes a copy-paste into a dashboard tends to add. */
+function readKey(name: string) {
+  return (process.env[name] ?? "").trim().replace(/^["']+|["']+$/g, "").trim()
+}
+
+/** Length and shape only, so a run log can show what a key looks like without exposing it. */
+function describeKey(key: string) {
+  const uuid = /^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(key)
+  return `${key.length} characters, ${uuid ? "key format looks right" : "not in the usual key format"}`
+}
+
+async function restStatus(key: string) {
+  // Company 00000006 is a long-dissolved company that always exists, so any
+  // valid key gets 200; an invalid one gets 401.
+  const response = await fetch(`${REST_URL}/company/00000006`, {
+    headers: { Authorization: basicAuth(key) },
+    signal: AbortSignal.timeout(15_000),
+  })
+  await response.body?.cancel()
+  return response.status
+}
+
+async function streamStatus(key: string) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  try {
+    const response = await fetch(STREAM_URL, { headers: { Authorization: basicAuth(key) }, signal: controller.signal })
+    return response.status
+  } finally {
+    clearTimeout(timer)
+    // Close the connection straight away: the account is limited to two.
+    controller.abort()
+  }
+}
+
+/**
+ * Works out why the stream rejected its key by trying each key against both
+ * APIs, so the run log can say exactly what to change.
+ */
+async function diagnoseStreamKey(apiKey: string, streamKey: string) {
+  const [streamKeyOnRest, apiKeyOnStream, apiKeyOnRest] = await Promise.all([
+    restStatus(streamKey).catch(() => 0),
+    streamStatus(apiKey).catch(() => 0),
+    restStatus(apiKey).catch(() => 0),
+  ])
+
+  const facts = `Stream key: ${describeKey(streamKey)}. REST key: ${describeKey(apiKey)}, ${
+    apiKeyOnRest === 200 ? "accepted by the REST API" : `REST API answered HTTP ${apiKeyOnRest}`
+  }.`
+
+  if (streamKey === apiKey) {
+    return `Both variables hold the same key. Create a separate Streaming key in the Companies House developer hub and put it in COMPANIES_HOUSE_STREAM_KEY. ${facts}`
+  }
+  if (apiKeyOnStream === 200 && streamKeyOnRest === 200) {
+    return `The two keys are swapped. Put the Streaming key in COMPANIES_HOUSE_STREAM_KEY and the REST key in COMPANIES_HOUSE_API_KEY. ${facts}`
+  }
+  if (streamKeyOnRest === 200) {
+    return `COMPANIES_HOUSE_STREAM_KEY holds a REST key. Create a key of type "Streaming" in the developer hub and use that instead. ${facts}`
+  }
+  return `Companies House rejected the stream key (HTTP 401). Check it is a "Streaming" key from a Live application, pasted without quotes or spaces. ${facts}`
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const FILING_PATH = /\/company\/([A-Z0-9]+)\/filing-history\/([^/?]+)/i
@@ -112,7 +174,7 @@ async function openStream(key: string, timepoint: number | undefined, signal: Ab
 }
 
 /** Phase 1: read the stream until the deadline or until it goes quiet. */
-async function readStream(ctx: CollectorContext, key: string, deadline: number) {
+async function readStream(ctx: CollectorContext, key: string, apiKey: string, deadline: number) {
   const state = await ctx.getState<{ timepoint: number }>()
   let timepoint = typeof state.timepoint === "number" ? state.timepoint : undefined
   const startTimepoint = timepoint
@@ -147,7 +209,8 @@ async function readStream(ctx: CollectorContext, key: string, deadline: number) 
       response = await openStream(key, undefined, controller.signal)
     }
     if (response.status === 401) {
-      throw new CollectorConfigError("Companies House rejected the stream key (HTTP 401). Check COMPANIES_HOUSE_STREAM_KEY.")
+      await response.body?.cancel()
+      throw new CollectorConfigError(await diagnoseStreamKey(apiKey, key))
     }
     if (response.status === 429) {
       await response.body?.cancel()
@@ -244,7 +307,9 @@ async function enrichCompanies(ctx: CollectorContext, key: string, deadline: num
       break
     }
     if (response.status === 401) {
-      throw new CollectorConfigError("Companies House rejected the REST API key (HTTP 401). Check COMPANIES_HOUSE_API_KEY.")
+      throw new CollectorConfigError(
+        `Companies House rejected the REST API key (HTTP 401). Check COMPANIES_HOUSE_API_KEY is a "REST" key from a Live application. Key: ${describeKey(key)}.`,
+      )
     }
     if (response.status === 404) {
       await sql.query(
@@ -298,11 +363,11 @@ export const companiesHouseSh01Collector: Collector = {
   sourceId: "companies-house-sh01",
   requiredEnv: ["COMPANIES_HOUSE_STREAM_KEY", "COMPANIES_HOUSE_API_KEY"],
   async run(ctx) {
-    const streamKey = process.env.COMPANIES_HOUSE_STREAM_KEY!
-    const apiKey = process.env.COMPANIES_HOUSE_API_KEY!
+    const streamKey = readKey("COMPANIES_HOUSE_STREAM_KEY")
+    const apiKey = readKey("COMPANIES_HOUSE_API_KEY")
     const budget = ctx.deadline - Date.now()
 
-    const stream = await readStream(ctx, streamKey, Date.now() + budget * STREAM_SHARE)
+    const stream = await readStream(ctx, streamKey, apiKey, Date.now() + budget * STREAM_SHARE)
     const enrich = await enrichCompanies(ctx, apiKey, ctx.deadline)
 
     const parts = [
