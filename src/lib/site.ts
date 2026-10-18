@@ -6,17 +6,17 @@
  */
 
 export const siteConfig = {
-  name: "Acme Inc.",
-  shortName: "Acme",
+  name: "Scryptic Lead Finder",
+  shortName: "Lead Finder",
   // Used as the default meta description, og:description and the llms.txt
   // summary. Aim for one plain sentence of 120 to 160 characters that says what
   // the product is and who it is for: answer engines quote it verbatim.
   description:
-    "Acme Inc. is a placeholder product description. Replace it with one clear sentence that says what you do and who it is for.",
+    "Scryptic Lead Finder collects buying signals, such as share allotments and Innovate UK grants, to find UK companies that need an MVP built.",
   // Optional longer context for llms.txt. Leave empty to omit.
   summary: "",
   keywords: [] as string[],
-  locale: "en_US",
+  locale: "en_GB",
   language: "en",
   // Keep these in step with --background and --primary in globals.css.
   // Generated images cannot read CSS variables and do not understand oklch.
@@ -28,7 +28,7 @@ export const siteConfig = {
     mutedForeground: "#737373",
   },
   organization: {
-    legalName: "Acme Inc.",
+    legalName: "Scryptic",
     email: "",
     foundingDate: "",
   },

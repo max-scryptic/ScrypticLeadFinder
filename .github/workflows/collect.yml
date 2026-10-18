@@ -1,0 +1,49 @@
+# Runs every live collector on a schedule and stores what they find in Neon.
+#
+# Needs these repository secrets (Settings > Secrets and variables > Actions):
+#   DATABASE_URL, COMPANIES_HOUSE_API_KEY, COMPANIES_HOUSE_STREAM_KEY
+#
+# GitHub only runs scheduled workflows from the default branch, so this starts
+# once it is merged to main. Use "Run workflow" on the Actions tab to run it by hand.
+name: Collect leads
+
+on:
+  schedule:
+    # Every 30 minutes. The Companies House stream keeps a limited backlog, so
+    # gaps much longer than this risk missing filings.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Source ids to run, space separated (blank for all)"
+        required: false
+        default: ""
+
+# Never two runs at once: Companies House allows two stream connections per account.
+concurrency:
+  group: collect-leads
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Run collectors
+        # Eight minutes per collector: most of it reading the Companies House
+        # stream and looking up the companies it finds.
+        run: npm run collect -- --budget=480 $SOURCES
+        env:
+          SOURCES: ${{ github.event.inputs.sources }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COMPANIES_HOUSE_API_KEY: ${{ secrets.COMPANIES_HOUSE_API_KEY }}
+          COMPANIES_HOUSE_STREAM_KEY: ${{ secrets.COMPANIES_HOUSE_STREAM_KEY }}

@@ -1,6 +1,33 @@
-# base-repo-3
+# Scryptic Lead Finder
 
-Next.js 16 app starter with [Base UI](https://base-ui.com) as the only UI primitive layer, styled with Tailwind CSS v4.
+Finds UK companies likely to need an MVP built, by collecting buying signals from public data. Each source has a collector that runs on a schedule; the Sources page (`/sources`) shows every source and the latest signals each one found.
+
+## Lead sources
+
+| Source | Status | How |
+| --- | --- | --- |
+| Companies House share allotments (SH01) | Live | Streaming API filing events, enriched with each company's profile from the REST API |
+| Innovate UK grant awards | Live | UKRI Gateway to Research API, newest projects by start date |
+| Accelerators, hiring posts, communities, new incorporations, tenders, paid databases | Planned | Cards on the Sources page; collectors to come |
+
+### Setup
+
+1. Copy `.env.example` to `.env.local` and fill in `DATABASE_URL` (Neon) and the two Companies House keys from the [developer hub](https://developer.company-information.service.gov.uk) (one REST key, one Streaming key).
+2. `npm run db:migrate` creates the tables (idempotent).
+3. `npm run collect` runs every live collector once; `npm run collect -- ukri-innovate-uk-grants` runs one.
+
+### Scheduling
+
+`.github/workflows/collect.yml` runs `npm run collect` every 30 minutes on GitHub Actions. Add `DATABASE_URL`, `COMPANIES_HOUSE_API_KEY` and `COMPANIES_HOUSE_STREAM_KEY` as repository secrets. Scheduled workflows only run from the default branch. Each source page also has a "Run now" button for a short manual run.
+
+### Adding a collector
+
+1. Write `src/collectors/<name>.ts` exporting a `Collector` (see `types.ts`); call `ctx.saveSignals()` with what it finds and keep any cursor in `ctx.setState()`.
+2. Register it in `src/collectors/index.ts` and set the source's `status` to `"live"` in `src/lib/sources.ts`.
+
+## Starter
+
+Built on a Next.js 16 starter with [Base UI](https://base-ui.com) as the only UI primitive layer, styled with Tailwind CSS v4.
 
 ## Getting started
 
