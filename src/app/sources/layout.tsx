@@ -1,6 +1,7 @@
 import Link from "next/link"
 
 import { BrandLogo } from "@/components/brand-logo"
+import { UserMenu } from "@/components/user-menu"
 import { siteConfig } from "@/lib/site"
 
 export default function SourcesLayout({ children }: LayoutProps<"/sources">) {
@@ -15,6 +16,9 @@ export default function SourcesLayout({ children }: LayoutProps<"/sources">) {
           <Link href="/sources" className="text-sm text-muted-foreground hover:text-foreground">
             Sources
           </Link>
+          <div className="ml-auto">
+            <UserMenu />
+          </div>
         </nav>
       </header>
       <div className="flex-1 bg-muted/40">{children}</div>

@@ -57,11 +57,13 @@ src/
     llms.txt/route.ts
     icon.tsx, apple-icon.tsx, opengraph-image.tsx
     not-found.tsx       Branded 404 (replaces Next's default and its "404: ..." title)
+    auth/actions.ts     signOut() Server Action: clears the session cookie, redirects to /login
   components/
-    ui/                 Generic widgets built on @base-ui/react (Button, Card, Field, Input, Label, Separator)
+    ui/                 Generic widgets built on @base-ui/react (Button, Card, DropdownMenu, Field, Input, Label, Separator)
     brand-logo.tsx      Placeholder mark (also drawn into the favicon and share image)
     json-ld.tsx         Safe JSON-LD <script> + per-page WebPage/Breadcrumb graph
     login-form.tsx      Shared login / signup card
+    user-menu.tsx       Account menu in the top bar, with sign out
     em-dash-guard.tsx   Dev guard against em dashes in rendered text
   lib/
     site.ts             Brand facts, site URL, indexability
