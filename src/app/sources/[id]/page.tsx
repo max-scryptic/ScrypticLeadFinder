@@ -5,11 +5,13 @@ import { notFound } from "next/navigation"
 import { connection } from "next/server"
 
 import { PageJsonLd } from "@/components/json-ld"
+import { Pagination } from "@/components/pagination"
 import { RunStatusBadge } from "@/components/run-status-badge"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { hasDatabase } from "@/lib/db"
 import { formatAge, formatDate, formatDateTime, formatMoney, formatRelative } from "@/lib/format"
+import { pageHref, parsePage } from "@/lib/pagination"
 import { getRecentRuns, getRecentSignals, getSourceSummaries, type SignalRow, type SourceSummary } from "@/lib/queries"
 import { createMetadata, pages, type PageEntry } from "@/lib/seo"
 import { getSource, type Source } from "@/lib/sources"
@@ -44,17 +46,30 @@ export default async function SourcePage({ params, searchParams }: PageProps<"/s
 
   const live = source.status === "live"
   const isSh01 = source.id === "companies-house-sh01"
-  const showAll = (await searchParams).all === "1"
+  const query = await searchParams
+  const showAll = query.all === "1"
+  // The signals and runs tables page separately, on ?page= and ?runs=.
+  const signalsPage = parsePage(query.page)
+  const runsPage = parsePage(query.runs)
 
+  const empty = { rows: [], total: 0 }
   const [summaries, runs, signals] =
     live && hasDatabase()
       ? await Promise.all([
           getSourceSummaries(),
-          getRecentRuns(source.id),
-          getRecentSignals(source.id, { maxCompanyAgeYears: isSh01 && !showAll ? SH01_MAX_AGE_YEARS : undefined }),
+          getRecentRuns(source.id, runsPage),
+          getRecentSignals(source.id, {
+            maxCompanyAgeYears: isSh01 && !showAll ? SH01_MAX_AGE_YEARS : undefined,
+            page: signalsPage,
+          }),
         ])
-      : [{} as Record<string, SourceSummary>, [], []]
+      : [{} as Record<string, SourceSummary>, empty, empty]
   const summary = summaries[source.id]
+  const href = `/sources/${source.id}?${new URLSearchParams({
+    ...(showAll && { all: "1" }),
+    ...(signalsPage > 1 && { page: String(signalsPage) }),
+    ...(runsPage > 1 && { runs: String(runsPage) }),
+  })}`
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-8 px-4 py-8">
@@ -123,27 +138,37 @@ export default async function SourcePage({ params, searchParams }: PageProps<"/s
                 </p>
               )}
             </div>
-            {signals.length === 0 ? (
+            {signals.total === 0 ? (
               <Empty>No signals yet. They appear here after the collector&apos;s next run.</Empty>
+            ) : signals.rows.length === 0 ? (
+              <Empty>
+                There is no page {signalsPage}.{" "}
+                <Link className="underline underline-offset-4" href={pageHref(href, "page", 1)}>
+                  Back to the first page
+                </Link>
+              </Empty>
             ) : (
-              <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-64">Company</TableHead>
-                      <TableHead>Signal</TableHead>
-                      <TableHead className="text-right">{isSh01 ? "" : "Grant offer"}</TableHead>
-                      <TableHead>{isSh01 ? "Filed" : "Starts"}</TableHead>
-                      <TableHead>Found</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {signals.map((signal) => (
-                      <SignalTableRow key={signal.id} signal={signal} isSh01={isSh01} />
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <>
+                <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-64">Company</TableHead>
+                        <TableHead>Signal</TableHead>
+                        <TableHead className="text-right">{isSh01 ? "" : "Grant offer"}</TableHead>
+                        <TableHead>{isSh01 ? "Filed" : "Starts"}</TableHead>
+                        <TableHead>Found</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {signals.rows.map((signal) => (
+                        <SignalTableRow key={signal.id} signal={signal} isSh01={isSh01} />
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <Pagination page={signalsPage} total={signals.total} href={href} noun="signals" label="Signals pages" />
+              </>
             )}
           </section>
 
@@ -151,39 +176,49 @@ export default async function SourcePage({ params, searchParams }: PageProps<"/s
             <h2 id="runs-heading" className="text-lg font-semibold">
               Recent runs
             </h2>
-            {runs.length === 0 ? (
+            {runs.total === 0 ? (
               <Empty>The collector has not run yet.</Empty>
+            ) : runs.rows.length === 0 ? (
+              <Empty>
+                There is no page {runsPage}.{" "}
+                <Link className="underline underline-offset-4" href={pageHref(href, "runs", 1)}>
+                  Back to the first page
+                </Link>
+              </Empty>
             ) : (
-              <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Started</TableHead>
-                      <TableHead>Trigger</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Found</TableHead>
-                      <TableHead className="text-right">New</TableHead>
-                      <TableHead>Notes</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {runs.map((run) => (
-                      <TableRow key={run.id}>
-                        <TableCell>{formatDateTime(run.started_at)}</TableCell>
-                        <TableCell className="capitalize">{run.trigger}</TableCell>
-                        <TableCell>
-                          <RunStatusBadge status={run.status} />
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">{run.items_seen}</TableCell>
-                        <TableCell className="text-right tabular-nums">{run.items_new}</TableCell>
-                        <TableCell className="max-w-md truncate whitespace-normal text-muted-foreground">
-                          {run.message}
-                        </TableCell>
+              <>
+                <div className="overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Started</TableHead>
+                        <TableHead>Trigger</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Found</TableHead>
+                        <TableHead className="text-right">New</TableHead>
+                        <TableHead>Notes</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                    </TableHeader>
+                    <TableBody>
+                      {runs.rows.map((run) => (
+                        <TableRow key={run.id}>
+                          <TableCell>{formatDateTime(run.started_at)}</TableCell>
+                          <TableCell className="capitalize">{run.trigger}</TableCell>
+                          <TableCell>
+                            <RunStatusBadge status={run.status} />
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{run.items_seen}</TableCell>
+                          <TableCell className="text-right tabular-nums">{run.items_new}</TableCell>
+                          <TableCell className="max-w-md truncate whitespace-normal text-muted-foreground">
+                            {run.message}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <Pagination page={runsPage} total={runs.total} href={href} param="runs" noun="runs" label="Runs pages" />
+              </>
             )}
           </section>
         </>

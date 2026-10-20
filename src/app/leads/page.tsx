@@ -3,6 +3,7 @@ import Link from "next/link"
 import { connection } from "next/server"
 
 import { PageJsonLd } from "@/components/json-ld"
+import { Pagination } from "@/components/pagination"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -20,6 +21,7 @@ import {
   type LeadFilters,
   type LeadSignal,
 } from "@/lib/leads"
+import { PAGE_SIZE, pageCount, parsePage } from "@/lib/pagination"
 import { getLeads, type LeadList } from "@/lib/queries"
 import { createMetadata, pages } from "@/lib/seo"
 
@@ -27,18 +29,18 @@ import { LeadStatusSelect } from "./lead-status-select"
 
 export const metadata = createMetadata(pages.leads)
 
-// Rows rendered on the page; the CSV export has every lead that matches.
-const PAGE_LIMIT = 200
-
 const statusLabels = { all: "All", new: "New", contacted: "Contacted", qualified: "Qualified", rejected: "Rejected" }
 
 export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
   await connection()
-  const filters = parseLeadFilters(await searchParams)
+  const params = await searchParams
+  const filters = parseLeadFilters(params)
   const list: LeadList = hasDatabase()
     ? await getLeads(filters)
     : { leads: [], statusCounts: { all: 0, new: 0, contacted: 0, qualified: 0, rejected: 0 }, excludedCount: 0 }
-  const shown = list.leads.slice(0, PAGE_LIMIT)
+  // A page past the end (say, after leads were marked contacted) shows the last one.
+  const page = Math.min(parsePage(params.page), pageCount(list.leads.length))
+  const shown = list.leads.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8">
@@ -127,11 +129,13 @@ export default async function LeadsPage({ searchParams }: PageProps<"/leads">) {
                 </TableBody>
               </Table>
             </div>
-            {list.leads.length > shown.length && (
-              <p className="text-sm text-muted-foreground">
-                Showing the top {shown.length} of {list.leads.length} leads. Export the CSV for all of them.
-              </p>
-            )}
+            <Pagination
+              page={page}
+              total={list.leads.length}
+              href={`/leads${leadFiltersQuery(filters)}`}
+              noun="leads"
+              label="Leads pages"
+            />
           </>
         )}
       </section>

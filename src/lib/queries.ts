@@ -2,6 +2,7 @@ import { connection } from "next/server"
 
 import { db } from "@/lib/db"
 import { matchesSource, scoreLead, type Lead, type LeadFilters, type LeadRow, type LeadStatus } from "@/lib/leads"
+import { PAGE_SIZE } from "@/lib/pagination"
 
 /*
  * Reads for the Sources and Leads pages. Each calls connection() so the page
@@ -83,37 +84,49 @@ export async function getSourceSummaries(): Promise<Record<string, SourceSummary
   )
 }
 
-export async function getRecentRuns(sourceId: string, limit = 10) {
+/** One page of a list, and how many rows the whole list has. */
+export type Page<Row> = { rows: Row[]; total: number }
+
+export async function getRecentRuns(sourceId: string, page = 1): Promise<Page<RunRow>> {
   await connection()
-  return (await db().query(
-    `SELECT id, source_id, trigger, status, started_at, finished_at, items_seen, items_new, message
-       FROM collector_runs WHERE source_id = $1 ORDER BY started_at DESC LIMIT $2`,
-    [sourceId, limit],
-  )) as RunRow[]
+  const [rows, [{ total }]] = await Promise.all([
+    db().query(
+      `SELECT id, source_id, trigger, status, started_at, finished_at, items_seen, items_new, message
+         FROM collector_runs WHERE source_id = $1 ORDER BY started_at DESC LIMIT $2 OFFSET $3`,
+      [sourceId, PAGE_SIZE, (page - 1) * PAGE_SIZE],
+    ),
+    db().query(`SELECT count(*)::int AS total FROM collector_runs WHERE source_id = $1`, [sourceId]),
+  ])
+  return { rows: rows as RunRow[], total }
 }
 
 export async function getRecentSignals(
   sourceId: string,
-  { maxCompanyAgeYears, limit = 100 }: { maxCompanyAgeYears?: number; limit?: number } = {},
-) {
+  { maxCompanyAgeYears, page = 1 }: { maxCompanyAgeYears?: number; page?: number } = {},
+): Promise<Page<SignalRow>> {
   await connection()
   // Companies not looked up yet have no age, so they stay in the list until they do.
   const ageFilter = maxCompanyAgeYears
-    ? `AND (c.company_number IS NULL OR c.date_of_creation >= current_date - make_interval(years => $3))`
+    ? `AND (c.company_number IS NULL OR c.date_of_creation >= current_date - make_interval(years => $2))`
     : ""
-  const params: unknown[] = [sourceId, limit]
+  const where = `FROM signals s LEFT JOIN companies c ON c.company_number = s.company_number
+      WHERE s.source_id = $1 ${ageFilter}`
+  const params: unknown[] = [sourceId]
   if (maxCompanyAgeYears) params.push(maxCompanyAgeYears)
 
-  return (await db().query(
-    `SELECT s.id, s.external_id, coalesce(s.company_name, c.name) AS company_name, s.company_number,
-            s.title, s.summary, s.amount, s.currency, s.occurred_on, s.url, s.data, s.first_seen_at,
-            c.status AS company_status, c.date_of_creation, c.sic_codes, c.locality, c.found AS company_found
-       FROM signals s LEFT JOIN companies c ON c.company_number = s.company_number
-      WHERE s.source_id = $1 ${ageFilter}
-      ORDER BY s.occurred_on DESC NULLS LAST, s.first_seen_at DESC
-      LIMIT $2`,
-    params,
-  )) as SignalRow[]
+  const [rows, [{ total }]] = await Promise.all([
+    db().query(
+      `SELECT s.id, s.external_id, coalesce(s.company_name, c.name) AS company_name, s.company_number,
+              s.title, s.summary, s.amount, s.currency, s.occurred_on, s.url, s.data, s.first_seen_at,
+              c.status AS company_status, c.date_of_creation, c.sic_codes, c.locality, c.found AS company_found
+         ${where}
+        ORDER BY s.occurred_on DESC NULLS LAST, s.first_seen_at DESC, s.id DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, PAGE_SIZE, (page - 1) * PAGE_SIZE],
+    ),
+    db().query(`SELECT count(*)::int AS total ${where}`, params),
+  ])
+  return { rows: rows as SignalRow[], total }
 }
 
 export type LeadList = {

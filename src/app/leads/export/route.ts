@@ -5,7 +5,7 @@ import { getLeads } from "@/lib/queries"
 
 /*
  * The Leads list as CSV, with the same filters as the page (passed in the
- * query string) but without the page's row limit.
+ * query string) but every page of it in one file.
  */
 
 const columns: [string, (lead: Lead) => string | number | null | undefined][] = [
