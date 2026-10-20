@@ -330,10 +330,10 @@ function peopleOf(row: LeadRow): Person[] {
   for (const officer of row.officers ?? []) {
     if (/secretary|nominee/.test(officer.role)) continue
     const role = roleLabels[officer.role] ?? titleCase(officer.role.replace(/-/g, " "))
-    // Individuals are "SURNAME, Forenames"; corporate officers are just the company name.
-    const comma = officer.name.indexOf(",")
-    const surname = comma === -1 ? officer.name : officer.name.slice(0, comma)
-    const forenames = comma === -1 ? "" : officer.name.slice(comma + 1).trim()
+    // Individuals are "SURNAME, Forenames" or "SURNAME, Forenames, Title"
+    // (the title is dropped); corporate officers are just the company name.
+    const [surname, forenamesPart] = officer.name.split(",")
+    const forenames = forenamesPart?.trim() ?? ""
     const key = forenames ? personKey(forenames, surname) : officer.name.toLowerCase()
     const existing = people.get(key)
     if (existing) {
