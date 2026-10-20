@@ -9,15 +9,20 @@ name: Collect leads
 
 on:
   schedule:
-    # Every 6 hours. Don't stretch this much further. The Companies House
-    # stream carries every filing (about 6,000 events an hour) and keeps only
-    # a limited backlog. Each run resumes where the last one stopped, and a
-    # 6-hour gap is caught up well inside the run's stream time. A daily gap
-    # (about 150,000 events) would not be: each run would fall further
-    # behind, and filings would be lost once the saved position dropped out
-    # of the backlog. GitHub also starts scheduled runs late, often by hours,
-    # so the real gap can be longer than this.
-    - cron: "0 */6 * * *"
+    # Every 3 hours, at 17 past: GitHub drops scheduled runs most often at the
+    # top of the hour, and starts the rest late, often by hours.
+    #
+    # The stream alone would be fine every 6 hours. It carries every filing
+    # (6,000 to 12,000 events an hour) and keeps only a limited backlog, and
+    # each run resumes where the last one stopped. A daily gap would not be
+    # caught up: each run would fall further behind, and filings would be
+    # lost once the saved position dropped out of the backlog.
+    #
+    # What sets the pace is reading SH01 documents, which gets whatever time
+    # the stream and company lookups leave. A long gap spends most of a run
+    # catching up the stream, and a busy day brings more SH01s than one run
+    # reads, so shorter gaps keep the amounts from falling behind.
+    - cron: "17 */3 * * *"
   workflow_dispatch:
     inputs:
       sources:
@@ -33,7 +38,8 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Room for every collector to use its whole budget, plus install time.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,9 +51,10 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Run collectors
-        # Eight minutes per collector: most of it reading the Companies House
-        # stream and looking up the companies it finds.
-        run: npm run collect -- --budget=480 $SOURCES
+        # Fifteen minutes per collector. The Companies House one splits it
+        # between the stream, company lookups and SH01 documents; the others
+        # finish in seconds.
+        run: npm run collect -- --budget=900 $SOURCES
         env:
           SOURCES: ${{ github.event.inputs.sources }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
