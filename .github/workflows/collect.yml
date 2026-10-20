@@ -19,9 +19,10 @@ on:
     # lost once the saved position dropped out of the backlog.
     #
     # What sets the pace is reading SH01 documents, which gets whatever time
-    # the stream and company lookups leave. A long gap spends most of a run
-    # catching up the stream, and a busy day brings more SH01s than one run
-    # reads, so shorter gaps keep the amounts from falling behind.
+    # the stream and company lookups leave. The stream stops early only on a
+    # heartbeat, which a busy daytime stream rarely sends, so it usually
+    # takes its whole share. A busy day brings more SH01s than one run reads,
+    # so more runs with a bigger budget keep the amounts from falling behind.
     - cron: "17 */3 * * *"
   workflow_dispatch:
     inputs:
