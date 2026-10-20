@@ -1,5 +1,4 @@
-import { db } from "@/lib/db"
-
+import { basicAuth, describeKey, enrichCompanies, readKey, REST_URL } from "./companies-house"
 import { CollectorConfigError, type Collector, type CollectorContext, type SignalInput } from "./types"
 
 /*
@@ -14,18 +13,15 @@ import { CollectorConfigError, type Collector, type CollectorContext, type Signa
  * Each run has two phases inside its time budget:
  *   1. Stream: read events from the saved timepoint, keep the SH01s.
  *   2. Enrich: look up each new company once through the REST API (age, status,
- *      SIC codes), cached in the companies table.
+ *      SIC codes, accounts type), cached in the companies table.
  *
  * Docs: https://developer-specs.company-information.service.gov.uk/streaming-api/guides/overview
  */
 
 const STREAM_URL = "https://stream.companieshouse.gov.uk/filings"
-const REST_URL = "https://api.company-information.service.gov.uk"
 
 // Share of the run's time budget spent reading the stream; the rest enriches.
 const STREAM_SHARE = 0.6
-// The REST API allows 600 requests per 5 minutes; stay just under it.
-const REST_SPACING_MS = 550
 const FLUSH_EVERY = 100
 
 type FilingEvent = {
@@ -45,31 +41,6 @@ type FilingEvent = {
     links?: { self?: string; document_metadata?: string }
   }
   event?: { type?: string; timepoint?: number; published_at?: string }
-}
-
-type CompanyProfile = {
-  company_number: string
-  company_name?: string
-  company_status?: string
-  type?: string
-  date_of_creation?: string
-  sic_codes?: string[]
-  registered_office_address?: { locality?: string; postal_code?: string }
-}
-
-function basicAuth(key: string) {
-  return `Basic ${Buffer.from(`${key}:`).toString("base64")}`
-}
-
-/** Reads a key, dropping the whitespace and quotes a copy-paste into a dashboard tends to add. */
-function readKey(name: string) {
-  return (process.env[name] ?? "").trim().replace(/^["']+|["']+$/g, "").trim()
-}
-
-/** Length and shape only, so a run log can show what a key looks like without exposing it. */
-function describeKey(key: string) {
-  const uuid = /^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(key)
-  return `${key.length} characters, ${uuid ? "key format looks right" : "not in the usual key format"}`
 }
 
 async function restStatus(key: string) {
@@ -122,8 +93,6 @@ async function diagnoseStreamKey(apiKey: string, streamKey: string) {
   }
   return `Companies House rejected the stream key (HTTP 401). Check it is a "Streaming" key from a Live application, pasted without quotes or spaces. ${facts}`
 }
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const FILING_PATH = /\/company\/([A-Z0-9]+)\/filing-history\/([^/?]+)/i
 
@@ -274,89 +243,6 @@ async function readStream(ctx: CollectorContext, key: string, apiKey: string, de
 
   ctx.log(`Read ${eventsRead} filings, ${found} SH01 (${inserted} new). Stopped: ${stopReason}. Last published ${lastPublishedAt ?? "n/a"}.`)
   return { eventsRead, found, inserted, startTimepoint, timepoint, stopReason, warning, lastPublishedAt }
-}
-
-/** Phase 2: fetch profiles for companies not yet in the cache. */
-async function enrichCompanies(ctx: CollectorContext, key: string, deadline: number) {
-  const sql = db()
-  const pending = (await sql.query(
-    `SELECT DISTINCT s.company_number
-       FROM signals s LEFT JOIN companies c ON c.company_number = s.company_number
-      WHERE s.source_id = $1 AND s.company_number IS NOT NULL AND c.company_number IS NULL
-      LIMIT 2000`,
-    [ctx.sourceId],
-  )) as { company_number: string }[]
-
-  let fetched = 0
-  let notFound = 0
-  let stopReason = pending.length === 0 ? "nothing to enrich" : "all companies enriched"
-
-  for (const { company_number: number } of pending) {
-    if (Date.now() + REST_SPACING_MS > deadline) {
-      stopReason = "time budget used up"
-      break
-    }
-    const started = Date.now()
-    const response = await fetch(`${REST_URL}/company/${encodeURIComponent(number)}`, {
-      headers: { Authorization: basicAuth(key) },
-      signal: AbortSignal.timeout(15_000),
-    })
-
-    if (response.status === 429) {
-      stopReason = "rate limited (HTTP 429)"
-      break
-    }
-    if (response.status === 401) {
-      throw new CollectorConfigError(
-        `Companies House rejected the REST API key (HTTP 401). Check COMPANIES_HOUSE_API_KEY is a "REST" key from a Live application. Key: ${describeKey(key)}.`,
-      )
-    }
-    if (response.status === 404) {
-      await sql.query(
-        "INSERT INTO companies (company_number, found) VALUES ($1, false) ON CONFLICT (company_number) DO NOTHING",
-        [number],
-      )
-      notFound++
-    } else if (response.ok) {
-      const profile = (await response.json()) as CompanyProfile
-      await sql.query(
-        `INSERT INTO companies (company_number, name, status, type, date_of_creation, sic_codes, locality, postcode, fetched_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-         ON CONFLICT (company_number) DO UPDATE SET
-           name = EXCLUDED.name, status = EXCLUDED.status, type = EXCLUDED.type,
-           date_of_creation = EXCLUDED.date_of_creation, sic_codes = EXCLUDED.sic_codes,
-           locality = EXCLUDED.locality, postcode = EXCLUDED.postcode, found = true, fetched_at = now()`,
-        [
-          number,
-          profile.company_name ?? null,
-          profile.company_status ?? null,
-          profile.type ?? null,
-          profile.date_of_creation ?? null,
-          profile.sic_codes ?? [],
-          profile.registered_office_address?.locality ?? null,
-          profile.registered_office_address?.postal_code ?? null,
-        ],
-      )
-      fetched++
-    } else {
-      ctx.log(`Company ${number}: HTTP ${response.status}, will retry next run.`)
-    }
-
-    const wait = REST_SPACING_MS - (Date.now() - started)
-    if (wait > 0) await sleep(wait)
-  }
-
-  await sql.query(
-    `UPDATE signals s SET company_name = c.name
-       FROM companies c
-      WHERE c.company_number = s.company_number AND s.source_id = $1
-        AND s.company_name IS NULL AND c.name IS NOT NULL`,
-    [ctx.sourceId],
-  )
-
-  const remaining = pending.length - fetched - notFound
-  ctx.log(`Enriched ${fetched} companies (${notFound} not found, ${remaining} left). Stopped: ${stopReason}.`)
-  return { fetched, notFound, remaining, stopReason }
 }
 
 export const companiesHouseSh01Collector: Collector = {

@@ -40,6 +40,29 @@ CREATE TABLE IF NOT EXISTS companies (
   fetched_at       timestamptz NOT NULL DEFAULT now()
 );
 
+-- Columns added after the table was first created.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS accounts_type text;
+-- Which version of the enrichment code wrote the row; older rows are fetched again.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS profile_version smallint NOT NULL DEFAULT 1;
+
+-- Company names from sources without a company number (grant records), and the
+-- number Companies House has registered under exactly that name. A null
+-- company_number means no exact match was found when last searched.
+CREATE TABLE IF NOT EXISTS company_name_matches (
+  name           text PRIMARY KEY,
+  company_number text,
+  searched_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- Triage status of a lead. lead_key is the company number, or 'name:' plus the
+-- company name for a lead not matched to Companies House. Leads without a row
+-- are new.
+CREATE TABLE IF NOT EXISTS lead_status (
+  lead_key   text PRIMARY KEY,
+  status     text        NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- One row per collector run, from the cron job or the "Run now" button.
 CREATE TABLE IF NOT EXISTS collector_runs (
   id          bigserial PRIMARY KEY,

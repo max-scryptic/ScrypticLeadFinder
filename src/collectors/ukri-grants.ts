@@ -1,3 +1,4 @@
+import { enrichCompanies, matchCompanyNames, readKey } from "./companies-house"
 import type { Collector, SignalInput } from "./types"
 
 /*
@@ -7,6 +8,11 @@ import type { Collector, SignalInput } from "./types"
  * start date and upserts them; anything already stored just gets its
  * last_seen_at bumped. Each project lists its participants with their grant
  * offer, so one request per page is enough.
+ *
+ * Grant records name the company but carry no company number. When a
+ * Companies House REST key is set, each run then matches names to numbers
+ * (exact registered name only) and looks the companies up, the same way the
+ * SH01 collector does, so grants get the company's age, status and SIC codes.
  *
  * API reference: https://gtr.ukri.org/resources/api.html
  */
@@ -144,11 +150,29 @@ export const ukriGrantsCollector: Collector = {
       if (page > 1 && inserted === 0) break
     }
 
+    const parts = [`${itemsNew} new grant${itemsNew === 1 ? "" : "s"} from ${pagesRead} page${pagesRead === 1 ? "" : "s"}`]
+    let match: Awaited<ReturnType<typeof matchCompanyNames>> | undefined
+    let enrich: Awaited<ReturnType<typeof enrichCompanies>> | undefined
+
+    const apiKey = readKey("COMPANIES_HOUSE_API_KEY")
+    if (apiKey) {
+      // Half the time left matches names; enriching gets the rest, including
+      // whatever matching did not need.
+      match = await matchCompanyNames(ctx, apiKey, Date.now() + (ctx.deadline - Date.now()) / 2)
+      enrich = await enrichCompanies(ctx, apiKey, ctx.deadline)
+      parts.push(`${match.matched} of ${match.searched} names matched at Companies House`)
+      parts.push(`${enrich.fetched} companies looked up`)
+      const left = match.remaining + enrich.remaining
+      if (left > 0) parts.push(`${left} still to match or look up`)
+    } else {
+      parts.push("COMPANIES_HOUSE_API_KEY is not set, so companies were not matched at Companies House")
+    }
+
     return {
       itemsSeen,
       itemsNew,
-      message: `${itemsNew} new grant${itemsNew === 1 ? "" : "s"} from ${pagesRead} page${pagesRead === 1 ? "" : "s"}.`,
-      stats: { pagesRead, skippedNoCompany },
+      message: `${parts.join(", ")}.`,
+      stats: { pagesRead, skippedNoCompany, match, enrich },
     }
   },
 }

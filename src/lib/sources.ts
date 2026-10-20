@@ -42,9 +42,9 @@ export const sources = [
     status: "live",
     signal:
       "A company won Innovate UK funding for an innovation project, which often has software that has to be built.",
-    access: "Gateway to Research public API. No key needed.",
+    access: "Gateway to Research public API, then the Companies House REST API to match each company.",
     details:
-      "Pulls the newest Innovate UK projects by start date and keeps the ones with a company (not only a university) taking part, with each company's grant offer.",
+      "Pulls the newest Innovate UK projects by start date and keeps the ones with a company (not only a university) taking part, with each company's grant offer. Each company is matched to Companies House by its exact registered name and looked up for age, status and SIC codes.",
     homepage: "https://gtr.ukri.org/",
   },
   {
