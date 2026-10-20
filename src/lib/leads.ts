@@ -184,6 +184,24 @@ const NON_TRADING_SIC: Record<string, string> = {
 // Software, data and R&D activities: the companies most likely to have a product to build.
 const PRODUCT_SIC = new Set(["58210", "58290", "62011", "62012", "62090", "63110", "63120", "72110", "72190"])
 
+/*
+ * Finance and property activities: banking, lending, insurance, fund and
+ * asset management, real estate and building development. Companies with
+ * these codes do raise money, but to invest or build, not to have software
+ * made. Some are fintechs, so they lose points rather than being excluded.
+ */
+function isFinanceOrPropertySic(code: string) {
+  return /^(64|65|66|68)/.test(code) || ["41100", "41201", "41202"].includes(code)
+}
+
+/*
+ * Words in a company name that mark a vehicle rather than a trading company:
+ * an SPV, a fund, a holding or finance company, a property company. A number
+ * just before "Limited" ("Pacific Finco 1 Limited") is how SPVs are numbered.
+ */
+const VEHICLE_NAME =
+  /\b(FINCO|BIDCO|TOPCO|MIDCO|HOLDCO|PROPCO|SPV|NOMINEES?|SECURITIES|INVESTMENTS?|CAPITAL|FUNDS?|ASSET MANAGEMENT|WEALTH MANAGEMENT|PROPERT(Y|IES)|REALTY|ESTATES?|DEVELOPMENTS)\b|\b\d+ (LIMITED|LTD)$/
+
 // Accounts types that mean a large company or part of a group, not a startup.
 const LARGE_ACCOUNTS: Record<string, string> = {
   full: "files full accounts",
@@ -231,6 +249,12 @@ export function exclusionFor(row: CompanyFacts, now = new Date()): string | null
 // Cash from new shares at least this big is a funding round. Smaller
 // allotments are usually founder shares, a new co-founder or options.
 const ROUND_MIN_RAISE = 10_000
+// Above this, a raise is a later round or a vehicle's funding, not an early
+// round that pays for a first product.
+const EARLY_ROUND_MAX = 2_000_000
+// Above this, an allotment is almost never a startup: it funds an SPV, a fund,
+// an acquisition or a property deal.
+const IMPLAUSIBLE_RAISE = 10_000_000
 // Allotments filed this close before the first one found as a signal are
 // tranches of the same round, and paperwork this close to it belongs to it.
 const SAME_ROUND_DAYS = 90
@@ -398,16 +422,20 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
   }
 
   if (sh01s.length > 0) {
-    add(30, sh01s.length > 1 ? `Filed ${sh01s.length} share allotments` : "Filed a share allotment")
+    add(20, sh01s.length > 1 ? `Filed ${sh01s.length} share allotments` : "Filed a share allotment")
     const latest = sh01s.map((signal) => signal.occurredOn).filter(Boolean).sort().at(-1)
-    if (latest && now.getTime() - new Date(latest).getTime() <= 30 * DAY_MS) add(10, "Share allotment filed in the last 30 days")
+    if (latest && now.getTime() - new Date(latest).getTime() <= 30 * DAY_MS) add(5, "Share allotment filed in the last 30 days")
 
     // What the allotments raised, from their documents. Most SH01s are cap
     // table changes (founder shares, a new co-founder, options) for a few
-    // pounds; a raise of thousands is a funding round.
+    // pounds; a raise of thousands is a funding round. Seed-sized rounds
+    // score best: much bigger ones are later rounds or not startups at all.
     if (raisedTotal !== null) {
       const raised = `Raised ${raisedUncertain ? "at least " : ""}${money.format(raisedTotal)} in cash from new shares`
-      if (raisedTotal >= 250_000) add(25, raised)
+      if (raisedTotal >= IMPLAUSIBLE_RAISE) {
+        add(-20, `${raised}: far more than an early round, so likely a fund, SPV or acquisition vehicle`)
+      } else if (raisedTotal > EARLY_ROUND_MAX) add(10, `${raised}, a later-stage round`)
+      else if (raisedTotal >= 250_000) add(25, raised)
       else if (raisedTotal >= 50_000) add(20, raised)
       else if (raisedTotal >= 10_000) add(10, raised)
       // Only when every allotment was read and its figures are clear: an
@@ -419,7 +447,7 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
 
     // A first round is the moment a company has money and no product team
     // yet; a company that raised before has usually built something already.
-    if (funding?.kind === "first" && raisedTotal !== null && raisedTotal >= ROUND_MIN_RAISE) {
+    if (funding?.kind === "first" && raisedTotal !== null && raisedTotal >= ROUND_MIN_RAISE && raisedTotal <= EARLY_ROUND_MAX) {
       add(15, `First funding round: no earlier allotment raised ${money.format(ROUND_MIN_RAISE)} or more`)
     }
     if (funding?.earlierRound) {
@@ -441,11 +469,20 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
   if (sh01s.length > 0 && grants.length > 0) add(15, "Both issued shares and won a grant")
 
   if (ageYears !== null) {
-    if (ageYears < 1) add(20, "Under a year old")
-    else if (ageYears < 3) add(15, "Under 3 years old")
+    if (ageYears < 1) add(15, "Under a year old")
+    else if (ageYears < 3) add(10, "Under 3 years old")
     else if (ageYears < 5) add(5, "Under 5 years old")
   }
-  if ((row.sic_codes ?? []).some((code) => PRODUCT_SIC.has(code))) add(10, "Software, data or R&D SIC code")
+  const sic = row.sic_codes ?? []
+  if (sic.some((code) => PRODUCT_SIC.has(code))) add(10, "Software, data or R&D SIC code")
+  const financeSic = sic.filter(isFinanceOrPropertySic)
+  if (financeSic.length > 0 && financeSic.length === sic.length) {
+    add(-25, `Only finance or property SIC codes (${financeSic.join(", ")})`)
+  } else if (financeSic.length > 0) {
+    add(-10, `Has a finance or property SIC code (${financeSic.join(", ")})`)
+  }
+  const vehicleWord = row.company_name ? VEHICLE_NAME.exec(row.company_name.toUpperCase())?.[0] : undefined
+  if (vehicleWord) add(-15, `Name suggests a fund, SPV, finance or property company ("${vehicleWord}")`)
 
   const latestSignalOn =
     row.signals
