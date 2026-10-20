@@ -63,6 +63,29 @@ CREATE TABLE IF NOT EXISTS company_name_matches (
   searched_at    timestamptz NOT NULL DEFAULT now()
 );
 
+-- Each lead company's website, found by guessing domains from its name and
+-- then by a Brave web search. A site only counts when one of its pages shows
+-- the company number or the registered name with "Ltd" or "Limited". A null
+-- url means none was found when last checked. Written by
+-- src/collectors/company-websites.ts.
+CREATE TABLE IF NOT EXISTS company_websites (
+  company_number text PRIMARY KEY,
+  url            text,
+  -- How the site was found: "guess" or "search".
+  method         text,
+  -- What proved it is the company's: "company-number" or "registered-name".
+  evidence       text,
+  title          text,
+  -- Visible text of the pages read, kept for judging whether the company needs an app.
+  page_text      text,
+  finder_version smallint    NOT NULL,
+  checked_at     timestamptz NOT NULL DEFAULT now(),
+  -- When the company was last searched for on Brave, to stay within the monthly allowance.
+  searched_at    timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS company_websites_searched_idx ON company_websites (searched_at);
+
 -- Triage status of a lead. lead_key is the company number, or 'name:' plus the
 -- company name for a lead not matched to Companies House. Leads without a row
 -- are new.

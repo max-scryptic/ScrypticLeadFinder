@@ -193,9 +193,11 @@ async function getLeadRows(days: number) {
      SELECT g.lead_key, g.company_number, coalesce(c.name, g.signal_company_name) AS company_name,
             c.status AS company_status, c.type AS company_type, c.date_of_creation, c.sic_codes,
             c.locality, c.postcode, c.accounts_type, c.found AS company_found, c.officers, c.pscs, c.filings,
+            w.url AS website_url, w.evidence AS website_evidence,
             g.last_found_at, g.signals, coalesce(ls.status, 'new') AS status
        FROM grouped g
        LEFT JOIN companies c ON c.company_number = g.company_number
+       LEFT JOIN company_websites w ON w.company_number = g.company_number
        LEFT JOIN lead_status ls ON ls.lead_key = g.lead_key`,
     [days],
   )) as LeadRow[]

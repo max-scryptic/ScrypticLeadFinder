@@ -10,6 +10,7 @@ Finds UK companies likely to need an MVP built, by collecting buying signals fro
 - **Cash raised**: read from each SH01 document (shares allotted times the amount paid per share, cash batches only). Scanned paper filings have no text, so their amount stays unknown and does not count for or against the company.
 - **First funding round**: a share allotment lead is on its first round when no allotment filed more than 90 days before it raised £10,000 or more in cash. The earlier allotments come from the company's filing history and their own SH01 documents are read the same way. When some of them are scans or not read yet, the flag says so instead of guessing.
 - **Decision makers**: the current directors (or LLP members) and the individuals with significant control, merged when one person is both, owners first. Secretaries, nominees, dates of birth and addresses are left out. Email addresses are not on Companies House.
+- **Website**: Companies House does not record one, so `npm run websites` looks for it, for companies the rules do not exclude. It guesses domains from the registered name (`.co.uk`, `.com`, `.io`, `.ai`, `.uk`), then searches Brave for the name when `BRAVE_SEARCH_API_KEY` is set. A site only counts when a page shows the company number (which UK companies must display), the name followed by "Ltd" or "Limited", or, marked "likely", the full name on a domain that spells it. That last tier catches "launching soon" placeholders, which pre-product companies often have. Searches stop at `BRAVE_MONTHLY_SEARCHES` (default 900) to stay inside Brave's free monthly credit. Companies with no site are looked up again after 60 days. The text of the pages read is kept in `company_websites` for judging fit later. The code is in `src/collectors/company-websites.ts`.
 - **Excluded** (hidden unless "Shown"): companies that are not active, dormant, only have holding, property or investment SIC codes, are PLCs, file full, group or medium accounts or are subsidiaries, or were incorporated over 10 years ago.
 - **Status**: new, contacted, qualified or rejected, saved per company in `lead_status`.
 - **Export CSV**: the same list with the same filters, every row.
@@ -29,10 +30,11 @@ The rules are in `src/lib/leads.ts`. Officers, PSCs and filing history are fetch
 1. Copy `.env.example` to `.env.local` and fill in `DATABASE_URL` (Neon) and the two Companies House keys from the [developer hub](https://developer.company-information.service.gov.uk) (one REST key, one Streaming key).
 2. `npm run db:migrate` creates the tables (idempotent).
 3. `npm run collect` runs every live collector once; `npm run collect -- ukri-innovate-uk-grants` runs one.
+4. Optional: add `BRAVE_SEARCH_API_KEY` from the [Brave Search API dashboard](https://api-dashboard.search.brave.com) so `npm run websites` can search for sites it cannot guess.
 
 ### Scheduling
 
-`.github/workflows/collect.yml` runs `npm run collect` every 3 hours on GitHub Actions, with 15 minutes per collector (the workflow file says why). Add `DATABASE_URL`, `COMPANIES_HOUSE_API_KEY` and `COMPANIES_HOUSE_STREAM_KEY` as repository secrets. Scheduled workflows only run from the default branch. Each source page also has a "Run now" button for a short manual run.
+`.github/workflows/collect.yml` runs `npm run collect` every 3 hours on GitHub Actions, with 15 minutes per collector (the workflow file says why), then `npm run websites` for 5 minutes. Add `DATABASE_URL`, `COMPANIES_HOUSE_API_KEY` and `COMPANIES_HOUSE_STREAM_KEY` as repository secrets, and `BRAVE_SEARCH_API_KEY` to search for websites. Scheduled workflows only run from the default branch. Each source page also has a "Run now" button for a short manual run.
 
 ### Adding a collector
 
