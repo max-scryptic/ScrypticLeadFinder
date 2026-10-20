@@ -101,6 +101,10 @@ export type LeadRow = {
   officers: Officer[] | null
   pscs: Psc[] | null
   filings: CompanyFilings | null
+  /** The company's website, null when none was found or before it is looked up. */
+  website_url: string | null
+  /** What proved the website is the company's: "company-number", "registered-name" or the weaker "brand-name". */
+  website_evidence: string | null
   last_found_at: Date
   signals: LeadSignal[]
   status: LeadStatus

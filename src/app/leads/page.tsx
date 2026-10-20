@@ -214,6 +214,22 @@ function LeadTableRow({ lead }: { lead: Lead }) {
           )}
           {meta.length > 0 && ` · ${meta.join(" · ")}`}
         </div>
+        {lead.website_url && (
+          <div className="text-xs">
+            <a className="underline-offset-4 hover:underline" href={lead.website_url} target="_blank" rel="noreferrer">
+              {new URL(lead.website_url).hostname.replace(/^www\./, "")}
+            </a>
+            {lead.website_evidence === "brand-name" && (
+              <span
+                className="text-muted-foreground"
+                title="The domain spells the company's name, but no page shows its number or registered name"
+              >
+                {" "}
+                (likely)
+              </span>
+            )}
+          </div>
+        )}
         {lead.people.length > 0 && (
           <ul className="mt-1.5 flex flex-col gap-0.5 text-xs" aria-label={`Decision makers at ${name}`}>
             {lead.people.slice(0, PEOPLE_SHOWN).map((person) => (

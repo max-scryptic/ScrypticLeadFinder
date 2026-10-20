@@ -18,6 +18,8 @@ const columns: [string, (lead: Lead) => string | number | null | undefined][] = 
     (lead) =>
       lead.company_number && `https://find-and-update.company-information.service.gov.uk/company/${lead.company_number}`,
   ],
+  ["Website", (lead) => lead.website_url],
+  ["Website evidence", (lead) => lead.website_evidence],
   ["Incorporated", (lead) => (lead.date_of_creation ? new Date(lead.date_of_creation).toISOString().slice(0, 10) : null)],
   ["Age (years)", (lead) => (lead.ageYears === null ? null : lead.ageYears.toFixed(1))],
   ["Locality", (lead) => lead.locality],
