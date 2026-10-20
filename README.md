@@ -30,7 +30,7 @@ The rules are in `src/lib/leads.ts`.
 
 ### Scheduling
 
-`.github/workflows/collect.yml` runs `npm run collect` every 30 minutes on GitHub Actions. Add `DATABASE_URL`, `COMPANIES_HOUSE_API_KEY` and `COMPANIES_HOUSE_STREAM_KEY` as repository secrets. Scheduled workflows only run from the default branch. Each source page also has a "Run now" button for a short manual run.
+`.github/workflows/collect.yml` runs `npm run collect` every 6 hours on GitHub Actions (the workflow file says why not less often). Add `DATABASE_URL`, `COMPANIES_HOUSE_API_KEY` and `COMPANIES_HOUSE_STREAM_KEY` as repository secrets. Scheduled workflows only run from the default branch. Each source page also has a "Run now" button for a short manual run.
 
 ### Adding a collector
 

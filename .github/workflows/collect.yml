@@ -9,9 +9,15 @@ name: Collect leads
 
 on:
   schedule:
-    # Every 30 minutes. The Companies House stream keeps a limited backlog, so
-    # gaps much longer than this risk missing filings.
-    - cron: "*/30 * * * *"
+    # Every 6 hours. Don't stretch this much further. The Companies House
+    # stream carries every filing (about 6,000 events an hour) and keeps only
+    # a limited backlog. Each run resumes where the last one stopped, and a
+    # 6-hour gap is caught up well inside the run's stream time. A daily gap
+    # (about 150,000 events) would not be: each run would fall further
+    # behind, and filings would be lost once the saved position dropped out
+    # of the backlog. GitHub also starts scheduled runs late, often by hours,
+    # so the real gap can be longer than this.
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       sources:
