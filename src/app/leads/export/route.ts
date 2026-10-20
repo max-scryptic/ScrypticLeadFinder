@@ -26,6 +26,16 @@ const columns: [string, (lead: Lead) => string | number | null | undefined][] = 
   ["Share allotments", (lead) => lead.signals.filter((signal) => signal.sourceId === SH01_SOURCE).length],
   ["Raised from share allotments (GBP)", (lead) => lead.raisedTotal],
   ["Raised amount uncertain", (lead) => (lead.raisedTotal === null ? null : lead.raisedUncertain ? "yes" : "no")],
+  ["First funding round", (lead) => (lead.funding ? { first: "yes", repeat: "no", unknown: "unknown" }[lead.funding.kind] : null)],
+  ["Earlier round raised (GBP)", (lead) => lead.funding?.earlierRound?.raised],
+  ["Earlier round filed", (lead) => lead.funding?.earlierRound?.filedOn],
+  [
+    "Decision makers",
+    (lead) =>
+      lead.people
+        .map((person) => `${person.name} (${[person.roles.join(", ") || "Owner", person.control].filter(Boolean).join(", ")})`)
+        .join("; "),
+  ],
   ["Grants", (lead) => lead.signals.filter((signal) => signal.sourceId === GRANT_SOURCE).length],
   ["Grant offers (GBP)", (lead) => lead.grantTotal || null],
   ["Grant projects", (lead) => lead.signals.filter((signal) => signal.sourceId === GRANT_SOURCE).map((signal) => signal.title).join("; ")],

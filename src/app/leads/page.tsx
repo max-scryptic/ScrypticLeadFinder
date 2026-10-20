@@ -17,9 +17,11 @@ import {
   leadWindows,
   parseLeadFilters,
   SH01_SOURCE,
+  type FundingHistory,
   type Lead,
   type LeadFilters,
   type LeadSignal,
+  type Person,
 } from "@/lib/leads"
 import { PAGE_SIZE, pageCount, parsePage } from "@/lib/pagination"
 import { getLeads, type LeadList } from "@/lib/queries"
@@ -28,6 +30,9 @@ import { createMetadata, pages } from "@/lib/seo"
 import { LeadStatusSelect } from "./lead-status-select"
 
 export const metadata = createMetadata(pages.leads)
+
+// Decision makers listed under each company; the rest are counted.
+const PEOPLE_SHOWN = 4
 
 const statusLabels = { all: "All", new: "New", contacted: "Contacted", qualified: "Qualified", rejected: "Rejected" }
 
@@ -209,6 +214,28 @@ function LeadTableRow({ lead }: { lead: Lead }) {
           )}
           {meta.length > 0 && ` · ${meta.join(" · ")}`}
         </div>
+        {lead.people.length > 0 && (
+          <ul className="mt-1.5 flex flex-col gap-0.5 text-xs" aria-label={`Decision makers at ${name}`}>
+            {lead.people.slice(0, PEOPLE_SHOWN).map((person) => (
+              <li key={person.name}>
+                <span className="font-medium">{person.name}</span>
+                <span className="text-muted-foreground"> · {personDetail(person)}</span>
+              </li>
+            ))}
+            {lead.people.length > PEOPLE_SHOWN && (
+              <li>
+                <a
+                  className="text-muted-foreground underline-offset-4 hover:underline"
+                  href={`https://find-and-update.company-information.service.gov.uk/company/${lead.company_number}/officers`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  and {lead.people.length - PEOPLE_SHOWN} more
+                </a>
+              </li>
+            )}
+          </ul>
+        )}
       </TableCell>
       <TableCell className="whitespace-normal">
         <ul className="flex flex-col gap-1.5">
@@ -218,6 +245,7 @@ function LeadTableRow({ lead }: { lead: Lead }) {
               details={[
                 sh01s[0].occurredOn ? `latest filed ${formatDate(sh01s[0].occurredOn)}` : null,
                 raisedDetail(lead, sh01s),
+                fundingDetail(lead.funding),
               ]}
             />
           )}
@@ -263,6 +291,24 @@ function raisedDetail(lead: Lead, sh01s: LeadSignal[]) {
     parts.push(scanned ? `${count}scanned filing${many ? "s" : ""}, amount unknown` : `${count || "amount "}not read yet`)
   }
   return parts.join(" · ")
+}
+
+/** Whether the company raised before, in a few words. */
+function fundingDetail(funding: FundingHistory | null) {
+  if (!funding) return null
+  if (funding.earlierRound) {
+    return `raised ${formatMoney(funding.earlierRound.raised)} before, filed ${formatDate(funding.earlierRound.filedOn)}`
+  }
+  if (funding.kind === "first") return "no earlier funding round"
+  return "earlier rounds not checked yet"
+}
+
+/** Role and stake, such as "Director, owns 75 to 100%", plus an occupation that says more than the role. */
+function personDetail(person: Person) {
+  const roles = person.roles.length > 0 ? person.roles.join(", ") : "Owner"
+  const occupation =
+    person.occupation && !/^(company )?director$/i.test(person.occupation.trim()) ? person.occupation : null
+  return [roles, person.control, occupation].filter(Boolean).join(", ")
 }
 
 function SignalItem({

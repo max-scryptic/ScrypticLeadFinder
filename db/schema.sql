@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS companies (
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS accounts_type text;
 -- Which version of the enrichment code wrote the row; older rows are fetched again.
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS profile_version smallint NOT NULL DEFAULT 1;
+-- Current officers and persons with significant control, and the capital and
+-- resolution filings that tell a first funding round from a later one. Written
+-- by src/collectors/company-history.ts; null until fetched, and left null for
+-- companies the lead rules exclude anyway.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS officers jsonb;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS pscs jsonb;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS filings jsonb;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS history_version smallint;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS history_fetched_at timestamptz;
 
 -- Company names from sources without a company number (grant records), and the
 -- number Companies House has registered under exactly that name. A null

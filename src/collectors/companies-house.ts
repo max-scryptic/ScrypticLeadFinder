@@ -13,7 +13,7 @@ import { CollectorConfigError, type CollectorContext } from "./types"
 export const REST_URL = "https://api.company-information.service.gov.uk"
 
 // The REST API allows 600 requests per 5 minutes; stay just under it.
-const REST_SPACING_MS = 550
+export const REST_SPACING_MS = 550
 
 // Bump when enrichCompanies() starts storing a new profile field, so cached
 // companies are fetched again to fill it in.
@@ -97,6 +97,20 @@ export async function eachRequest<T>(
   }
 
   return { done, stopReason }
+}
+
+/**
+ * A GET for work that makes several REST requests per item: each call waits
+ * until REST_SPACING_MS has passed since the one before.
+ */
+export function pacedGet(key: string) {
+  let last = 0
+  return async (path: string) => {
+    const wait = last + REST_SPACING_MS - Date.now()
+    if (wait > 0) await sleep(wait)
+    last = Date.now()
+    return fetch(`${REST_URL}${path}`, { headers: { Authorization: basicAuth(key) }, signal: AbortSignal.timeout(15_000) })
+  }
 }
 
 /**
