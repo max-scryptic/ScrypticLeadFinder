@@ -1,10 +1,11 @@
 import Link from "next/link"
 
 import { BrandLogo } from "@/components/brand-logo"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { UserMenu } from "@/components/user-menu"
 import { siteConfig } from "@/lib/site"
 
-/** Top bar of the signed-in app: brand, main navigation and the account menu. */
+/** Top bar of the signed-in app: brand, main navigation, theme toggle and the account menu. */
 export function AppHeader() {
   return (
     <header className="border-b bg-background">
@@ -19,7 +20,8 @@ export function AppHeader() {
         <Link href="/sources" className="text-sm text-muted-foreground hover:text-foreground">
           Sources
         </Link>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          <ThemeToggle />
           <UserMenu />
         </div>
       </nav>

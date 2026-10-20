@@ -10,6 +10,7 @@ import {
   TITLE_SEPARATOR,
 } from "@/lib/seo";
 import { siteConfig, siteUrl } from "@/lib/site";
+import { themeScript } from "@/lib/theme";
 import {
   graph,
   organizationJsonLd,
@@ -81,7 +82,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang={siteConfig.language}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      // The theme script below adds `.dark` before React hydrates.
+      suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="relative min-h-full">
         {/* Site-wide entities; each page's graph links back to these by @id. */}
         <JsonLd data={graph(organizationJsonLd(), websiteJsonLd())} />
