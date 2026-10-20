@@ -1,4 +1,5 @@
 import { basicAuth, describeKey, enrichCompanies, readKey, REST_URL } from "./companies-house"
+import { enrichCompanyHistory } from "./company-history"
 import { readAllotmentDocuments } from "./share-allotment-documents"
 import { CollectorConfigError, type Collector, type CollectorContext, type SignalInput } from "./types"
 
@@ -11,11 +12,14 @@ import { CollectorConfigError, type Collector, type CollectorContext, type Signa
  * replays whatever was missed (Companies House keeps a limited backlog and
  * answers 416 when the timepoint is too old).
  *
- * Each run has three phases inside its time budget:
+ * Each run has four phases inside its time budget:
  *   1. Stream: read events from the saved timepoint, keep the SH01s.
  *   2. Enrich: look up each new company once through the REST API (age, status,
  *      SIC codes, accounts type), cached in the companies table.
- *   3. Documents: read each SH01 document for the cash the allotment raised
+ *   3. History: fetch each lead's officers, PSCs and filing history, and read
+ *      its earlier allotments, to name its decision makers and tell whether
+ *      this is its first round (see company-history.ts).
+ *   4. Documents: read each SH01 document for the cash the allotment raised
  *      (see share-allotment-documents.ts).
  *
  * Docs: https://developer-specs.company-information.service.gov.uk/streaming-api/guides/overview
@@ -23,11 +27,12 @@ import { CollectorConfigError, type Collector, type CollectorContext, type Signa
 
 const STREAM_URL = "https://stream.companieshouse.gov.uk/filings"
 
-// Points in the run's time budget where the stream phase and then the enrich
-// phase stop; the rest reads documents. A phase that finishes early hands its
-// time to the next.
+// Points in the run's time budget where the stream, enrich and history phases
+// stop; the rest reads documents. A phase that finishes early hands its time
+// to the next.
 const STREAM_SHARE = 0.5
-const ENRICH_SHARE = 0.75
+const ENRICH_SHARE = 0.65
+const HISTORY_SHARE = 0.8
 const FLUSH_EVERY = 100
 
 // When the stream phase counts as caught up during busy hours, when live
@@ -312,14 +317,17 @@ export const companiesHouseSh01Collector: Collector = {
 
     const stream = await readStream(ctx, streamKey, apiKey, start + budget * STREAM_SHARE)
     const enrich = await enrichCompanies(ctx, apiKey, start + budget * ENRICH_SHARE)
+    const history = await enrichCompanyHistory(ctx, apiKey, start + budget * HISTORY_SHARE)
     const documents = await readAllotmentDocuments(ctx, apiKey, ctx.deadline)
 
     const parts = [
       `${stream.inserted} new SH01 from ${stream.eventsRead} filings`,
       `${enrich.fetched} companies looked up`,
-      `${documents.read} documents read`,
+      `${history.fetched} filing histories fetched`,
+      `${documents.read + history.documents.read} documents read`,
     ]
     if (enrich.remaining > 0) parts.push(`${enrich.remaining} companies still to look up`)
+    if (history.remaining > 0) parts.push(`${history.remaining} filing histories still to fetch`)
     if (documents.remaining > 0) parts.push(`${documents.remaining} documents still to read`)
     if (stream.warning) parts.push(stream.warning)
 
@@ -327,7 +335,7 @@ export const companiesHouseSh01Collector: Collector = {
       itemsSeen: stream.found,
       itemsNew: stream.inserted,
       message: `${parts.join(", ")}.`,
-      stats: { stream, enrich, documents },
+      stats: { stream, enrich, history, documents },
     }
   },
 }

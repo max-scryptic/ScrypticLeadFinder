@@ -1,4 +1,5 @@
 import { enrichCompanies, matchCompanyNames, readKey } from "./companies-house"
+import { enrichCompanyHistory } from "./company-history"
 import type { Collector, SignalInput } from "./types"
 
 /*
@@ -12,7 +13,8 @@ import type { Collector, SignalInput } from "./types"
  * Grant records name the company but carry no company number. When a
  * Companies House REST key is set, each run then matches names to numbers
  * (exact registered name only) and looks the companies up, the same way the
- * SH01 collector does, so grants get the company's age, status and SIC codes.
+ * SH01 collector does, so grants get the company's age, status, SIC codes,
+ * officers and owners.
  *
  * API reference: https://gtr.ukri.org/resources/api.html
  */
@@ -153,16 +155,20 @@ export const ukriGrantsCollector: Collector = {
     const parts = [`${itemsNew} new grant${itemsNew === 1 ? "" : "s"} from ${pagesRead} page${pagesRead === 1 ? "" : "s"}`]
     let match: Awaited<ReturnType<typeof matchCompanyNames>> | undefined
     let enrich: Awaited<ReturnType<typeof enrichCompanies>> | undefined
+    let history: Awaited<ReturnType<typeof enrichCompanyHistory>> | undefined
 
     const apiKey = readKey("COMPANIES_HOUSE_API_KEY")
     if (apiKey) {
-      // Half the time left matches names; enriching gets the rest, including
-      // whatever matching did not need.
+      // Half the time left matches names, half of what remains looks the
+      // companies up, and their people and filings get the rest, including
+      // whatever the earlier steps did not need.
       match = await matchCompanyNames(ctx, apiKey, Date.now() + (ctx.deadline - Date.now()) / 2)
-      enrich = await enrichCompanies(ctx, apiKey, ctx.deadline)
+      enrich = await enrichCompanies(ctx, apiKey, Date.now() + (ctx.deadline - Date.now()) / 2)
+      history = await enrichCompanyHistory(ctx, apiKey, ctx.deadline)
       parts.push(`${match.matched} of ${match.searched} names matched at Companies House`)
       parts.push(`${enrich.fetched} companies looked up`)
-      const left = match.remaining + enrich.remaining
+      parts.push(`${history.fetched} filing histories fetched`)
+      const left = match.remaining + enrich.remaining + history.remaining
       if (left > 0) parts.push(`${left} still to match or look up`)
     } else {
       parts.push("COMPANIES_HOUSE_API_KEY is not set, so companies were not matched at Companies House")
@@ -172,7 +178,7 @@ export const ukriGrantsCollector: Collector = {
       itemsSeen,
       itemsNew,
       message: `${parts.join(", ")}.`,
-      stats: { pagesRead, skippedNoCompany, match, enrich },
+      stats: { pagesRead, skippedNoCompany, match, enrich, history },
     }
   },
 }

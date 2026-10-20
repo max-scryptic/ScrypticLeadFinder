@@ -52,8 +52,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Run collectors
         # Fifteen minutes per collector. The Companies House one splits it
-        # between the stream, company lookups and SH01 documents; the others
-        # finish in seconds.
+        # between the stream, company lookups, filing histories and SH01
+        # documents; the others finish in seconds.
         run: npm run collect -- --budget=900 $SOURCES
         env:
           SOURCES: ${{ github.event.inputs.sources }}

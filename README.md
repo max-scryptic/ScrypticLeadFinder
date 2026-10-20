@@ -6,19 +6,21 @@ Finds UK companies likely to need an MVP built, by collecting buying signals fro
 
 `/leads` lists every company with a signal found in the chosen window (30, 90 or 365 days), best first. Each company's signals from all sources are combined, keyed by Companies House number (or by name when a grant company could not be matched).
 
-- **Score** (0 to 100): points for each signal (share allotment, recent filing, cash raised, grant, grant size, active project, lead participant, both kinds of signal), for a young company and for a software, data or R&D SIC code. Share allotments that raised under £1,000 lose points, since they are cap table changes rather than funding rounds. The "Why" column lists every rule that fired.
+- **Score** (0 to 100): points for each signal (share allotment, recent filing, cash raised, grant, grant size, active project, lead participant, both kinds of signal), for a young company and for a software, data or R&D SIC code. Share allotments that raised under £1,000 lose points, since they are cap table changes rather than funding rounds. A first funding round gains points, a company that raised a round before loses some, and new articles or share classes filed around the allotment add a few. The "Why" column lists every rule that fired.
 - **Cash raised**: read from each SH01 document (shares allotted times the amount paid per share, cash batches only). Scanned paper filings have no text, so their amount stays unknown and does not count for or against the company.
+- **First funding round**: a share allotment lead is on its first round when no allotment filed more than 90 days before it raised £10,000 or more in cash. The earlier allotments come from the company's filing history and their own SH01 documents are read the same way. When some of them are scans or not read yet, the flag says so instead of guessing.
+- **Decision makers**: the current directors (or LLP members) and the individuals with significant control, merged when one person is both, owners first. Secretaries, nominees, dates of birth and addresses are left out. Email addresses are not on Companies House.
 - **Excluded** (hidden unless "Shown"): companies that are not active, dormant, only have holding, property or investment SIC codes, are PLCs, file full, group or medium accounts or are subsidiaries, or were incorporated over 10 years ago.
 - **Status**: new, contacted, qualified or rejected, saved per company in `lead_status`.
 - **Export CSV**: the same list with the same filters, every row.
 
-The rules are in `src/lib/leads.ts`.
+The rules are in `src/lib/leads.ts`. Officers, PSCs and filing history are fetched in `src/collectors/company-history.ts`, only for companies the rules do not exclude, and again whenever a company gets a new signal.
 
 ## Lead sources
 
 | Source | Status | How |
 | --- | --- | --- |
-| Companies House share allotments (SH01) | Live | Streaming API filing events, enriched with each company's profile from the REST API and the cash raised from the filing's document (Document API) |
+| Companies House share allotments (SH01) | Live | Streaming API filing events, enriched with each company's profile, officers, PSCs and filing history from the REST API and the cash raised from the filing's document (Document API) |
 | Innovate UK grant awards | Live | UKRI Gateway to Research API, newest projects by start date; companies matched to Companies House by exact registered name, then enriched like SH01 |
 | Accelerators, hiring posts, communities, new incorporations, tenders, paid databases | Planned | Cards on the Sources page; collectors to come |
 

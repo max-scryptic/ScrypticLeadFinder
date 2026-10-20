@@ -39,6 +39,52 @@ export type LeadSignal = {
   amountUncertain: boolean
 }
 
+/** A current officer of the company, from its Companies House officers list. */
+export type Officer = {
+  /** As Companies House shows it: "SMITH, Jane Anne". */
+  name: string
+  /** "director", "llp-designated-member", "corporate-director", "secretary", ... */
+  role: string
+  appointedOn: string | null
+  occupation: string | null
+  /** Companies House's id for the person, the same on every company they are an officer of. */
+  officerId: string | null
+}
+
+/** A current person with significant control (an owner or controller). */
+export type Psc = {
+  name: string
+  /** "individual-person-with-significant-control", "corporate-entity-person-with-significant-control", ... */
+  kind: string
+  forename: string | null
+  surname: string | null
+  /** Such as "ownership-of-shares-75-to-100-percent" or "right-to-appoint-and-remove-directors". */
+  naturesOfControl: string[]
+  notifiedOn: string | null
+}
+
+/** An SH01 in the company's filing history, newest first. */
+export type HistoricAllotment = {
+  transactionId: string
+  filedOn: string
+  allottedOn: string | null
+  documentUrl: string | null
+  /** True when this filing is also one of the lead's signals, whose own document read gives its amount. */
+  isSignal: boolean
+  /** What its document showed, once read. `status` is an AllotmentReadStatus. */
+  read?: { status: string; version: number; raised?: Record<string, number>; uncertain?: boolean }
+}
+
+/** Filings that usually accompany a priced round: new articles, new share classes, authority to allot. */
+export type RoundPaperwork = { filedOn: string; kind: "articles" | "share-classes" | "allotment-authority" }
+
+export type CompanyFilings = {
+  allotments: HistoricAllotment[]
+  paperwork: RoundPaperwork[]
+  /** True when the history had more filings than one page, so the oldest are missing. */
+  truncated: boolean
+}
+
 export type LeadRow = {
   lead_key: string
   company_number: string | null
@@ -51,9 +97,40 @@ export type LeadRow = {
   postcode: string | null
   accounts_type: string | null
   company_found: boolean | null
+  /** Null until the company's people and filing history are fetched. */
+  officers: Officer[] | null
+  pscs: Psc[] | null
+  filings: CompanyFilings | null
   last_found_at: Date
   signals: LeadSignal[]
   status: LeadStatus
+}
+
+/** A decision maker: a current director or LLP member, or an individual who controls the company, merged when both. */
+export type Person = {
+  name: string
+  /** "Director", "LLP member", ...; empty for an owner who is not an officer. */
+  roles: string[]
+  /** How they control the company, such as "owns 75 to 100%", or null. */
+  control: string | null
+  appointedOn: string | null
+  occupation: string | null
+}
+
+/** Whether the share allotment the lead was found by is the company's first funding round. */
+export type FundingHistory = {
+  /**
+   * "first": no earlier allotment raised a round's worth of cash. "repeat":
+   * one did. "unknown": earlier allotments are scans, not read yet, or past
+   * the end of the fetched history.
+   */
+  kind: "first" | "repeat" | "unknown"
+  /** Allotments filed before the current round. */
+  earlierCount: number
+  /** The most recent earlier allotment that raised a round, if any (GBP). */
+  earlierRound: { filedOn: string; raised: number } | null
+  /** Round paperwork filed around the current round. */
+  paperwork: RoundPaperwork["kind"][]
 }
 
 export type Lead = LeadRow & {
@@ -68,6 +145,10 @@ export type Lead = LeadRow & {
   /** True when an allotment's figures were ambiguous, so `raisedTotal` may be too low. */
   raisedUncertain: boolean
   latestSignalOn: string | null
+  /** Directors and owners, owners first. Empty until fetched. */
+  people: Person[]
+  /** Null until the filing history is fetched, or for a lead found by grants only. */
+  funding: FundingHistory | null
 }
 
 /*
@@ -120,7 +201,14 @@ function yearsSince(date: Date | string, now: Date) {
   return (now.getTime() - new Date(date).getTime()) / (365.25 * DAY_MS)
 }
 
-function exclusionFor(row: LeadRow, ageYears: number | null): string | null {
+type CompanyFacts = Pick<LeadRow, "company_status" | "company_type" | "date_of_creation" | "sic_codes" | "accounts_type">
+
+/**
+ * Why a company is almost certainly not a buyer, or null. Also used by the
+ * collectors to skip fetching more about such companies.
+ */
+export function exclusionFor(row: CompanyFacts, now = new Date()): string | null {
+  const ageYears = row.date_of_creation ? yearsSince(row.date_of_creation, now) : null
   if (row.company_status && row.company_status !== "active") {
     return `Company is ${row.company_status.replace(/-/g, " ")}`
   }
@@ -140,6 +228,153 @@ function exclusionFor(row: LeadRow, ageYears: number | null): string | null {
   return null
 }
 
+// Cash from new shares at least this big is a funding round. Smaller
+// allotments are usually founder shares, a new co-founder or options.
+const ROUND_MIN_RAISE = 10_000
+// Allotments filed this close before the first one found as a signal are
+// tranches of the same round, and paperwork this close to it belongs to it.
+const SAME_ROUND_DAYS = 90
+
+const paperworkLabels: Record<RoundPaperwork["kind"], string> = {
+  articles: "new articles",
+  "share-classes": "new share classes",
+  "allotment-authority": "authority to allot shares",
+}
+
+const monthYear = new Intl.DateTimeFormat("en-GB", { month: "short", year: "numeric" })
+
+/**
+ * Whether the round the lead was found by is the company's first: no
+ * allotment filed before it (outside the round's own tranches) raised
+ * ROUND_MIN_RAISE in cash. Earlier allotments' amounts come from their SH01
+ * documents, read by the collector.
+ */
+function fundingHistory(row: LeadRow, sh01s: LeadSignal[]): FundingHistory | null {
+  if (!row.filings || sh01s.length === 0) return null
+  const dates = sh01s.map((signal) => new Date(signal.occurredOn ?? signal.firstSeenAt).getTime()).sort((a, b) => a - b)
+  const roundStart = dates[0]
+  const roundEnd = dates.at(-1)!
+  const window = SAME_ROUND_DAYS * DAY_MS
+
+  const earlier = row.filings.allotments.filter(
+    (allotment) => !allotment.isSignal && new Date(allotment.filedOn).getTime() < roundStart - window,
+  )
+  // Cash raised in GBP, or null when not known: unread, a scan, or only a
+  // lower bound that is under the threshold.
+  const raisedBy = (allotment: HistoricAllotment) => {
+    if (allotment.read?.status !== "read") return null
+    const raised = allotment.read.raised?.GBP ?? 0
+    return allotment.read.uncertain && raised < ROUND_MIN_RAISE ? null : raised
+  }
+  // Allotments are newest first, so this is the latest earlier round.
+  const round = earlier.find((allotment) => (raisedBy(allotment) ?? 0) >= ROUND_MIN_RAISE)
+  const unknown = row.filings.truncated || earlier.some((allotment) => raisedBy(allotment) === null)
+  const paperwork = row.filings.paperwork.filter((filing) => {
+    const time = new Date(filing.filedOn).getTime()
+    return time >= roundStart - window && time <= roundEnd + window
+  })
+
+  return {
+    kind: round ? "repeat" : unknown ? "unknown" : "first",
+    earlierCount: earlier.length,
+    earlierRound: round ? { filedOn: round.filedOn, raised: raisedBy(round)! } : null,
+    paperwork: [...new Set(paperwork.map((filing) => filing.kind))],
+  }
+}
+
+const roleLabels: Record<string, string> = {
+  director: "Director",
+  "corporate-director": "Corporate director",
+  "llp-member": "LLP member",
+  "llp-designated-member": "LLP designated member",
+  "corporate-llp-member": "Corporate LLP member",
+  "corporate-llp-designated-member": "Corporate LLP designated member",
+}
+
+const titleCase = (text: string) =>
+  text.toLowerCase().replace(/(^|[\s'’-])(\p{L})/gu, (_, separator: string, letter: string) => separator + letter.toUpperCase())
+
+/** Key that matches an officer to a PSC: first forename and surname, letters only. */
+const personKey = (forenames: string, surname: string) =>
+  `${forenames.trim().split(/\s+/)[0]} ${surname}`.toLowerCase().replace(/[^\p{L} ]/gu, "")
+
+/** The strongest way a PSC controls the company, in words. */
+function controlOf(natures: string[]) {
+  const band = (prefix: string) => {
+    for (const nature of natures) {
+      const match = new RegExp(`^${prefix}-(\\d+)-to-(\\d+)-percent`).exec(nature)
+      if (match) return `${match[1]} to ${match[2]}%`
+    }
+    return null
+  }
+  const shares = band("ownership-of-shares")
+  if (shares) return `owns ${shares}`
+  const votes = band("voting-rights")
+  if (votes) return `${votes} of votes`
+  if (natures.some((nature) => nature.startsWith("right-to-appoint-and-remove-"))) return "appoints the board"
+  if (natures.some((nature) => nature.startsWith("significant-influence-or-control"))) return "significant influence"
+  return null
+}
+
+/**
+ * The company's decision makers: directors and LLP members (not secretaries
+ * or nominees) and individual PSCs, merged by name when one person is both.
+ * Owners come first, by stake, then officers by appointment date, so founders
+ * lead the list.
+ */
+function peopleOf(row: LeadRow): Person[] {
+  const people = new Map<string, Person>()
+  // Size of each person's stake, for the order.
+  const ranks = new Map<Person, number>()
+
+  for (const officer of row.officers ?? []) {
+    if (/secretary|nominee/.test(officer.role)) continue
+    const role = roleLabels[officer.role] ?? titleCase(officer.role.replace(/-/g, " "))
+    // Individuals are "SURNAME, Forenames"; corporate officers are just the company name.
+    const comma = officer.name.indexOf(",")
+    const surname = comma === -1 ? officer.name : officer.name.slice(0, comma)
+    const forenames = comma === -1 ? "" : officer.name.slice(comma + 1).trim()
+    const key = forenames ? personKey(forenames, surname) : officer.name.toLowerCase()
+    const existing = people.get(key)
+    if (existing) {
+      if (!existing.roles.includes(role)) existing.roles.push(role)
+      continue
+    }
+    people.set(key, {
+      name: forenames ? `${forenames} ${titleCase(surname)}` : officer.name,
+      roles: [role],
+      control: null,
+      appointedOn: officer.appointedOn,
+      occupation: officer.occupation,
+    })
+  }
+
+  for (const psc of row.pscs ?? []) {
+    if (!psc.kind.startsWith("individual")) continue
+    const control = controlOf(psc.naturesOfControl)
+    const rank = control ? Number(/\d+/.exec(control)?.[0] ?? 1) : 0
+    const key = psc.forename && psc.surname ? personKey(psc.forename, psc.surname) : psc.name.toLowerCase()
+    const person = people.get(key)
+    if (person) {
+      person.control = control
+      ranks.set(person, rank)
+      // The PSC register has the surname in its proper case ("McDonald", not "MCDONALD").
+      if (psc.surname) person.name = `${person.name.slice(0, person.name.lastIndexOf(" "))} ${psc.surname}`
+    } else {
+      const name = psc.forename && psc.surname ? `${psc.forename} ${psc.surname}` : psc.name
+      const owner = { name, roles: [], control, appointedOn: null, occupation: null }
+      people.set(key, owner)
+      ranks.set(owner, rank)
+    }
+  }
+
+  return [...people.values()]
+    .sort(
+      (a, b) =>
+        (ranks.get(b) ?? 0) - (ranks.get(a) ?? 0) || (a.appointedOn ?? "9999").localeCompare(b.appointedOn ?? "9999"),
+    )
+}
+
 /** Scores one lead. Points add up to at most 100; every rule that fired is listed in `reasons`. */
 export function scoreLead(row: LeadRow, now = new Date()): Lead {
   const ageYears = row.date_of_creation ? yearsSince(row.date_of_creation, now) : null
@@ -153,6 +388,7 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
       ? readSh01s.reduce((sum, signal) => sum + (signal.currency === "GBP" ? Number(signal.amount ?? 0) : 0), 0)
       : null
   const raisedUncertain = readSh01s.some((signal) => signal.amountUncertain)
+  const funding = fundingHistory(row, sh01s)
 
   let score = 0
   const reasons: string[] = []
@@ -180,6 +416,21 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
         add(-15, raisedTotal === 0 ? "No cash raised from new shares" : `Only ${money.format(raisedTotal)} raised, so not a funding round`)
       }
     }
+
+    // A first round is the moment a company has money and no product team
+    // yet; a company that raised before has usually built something already.
+    if (funding?.kind === "first" && raisedTotal !== null && raisedTotal >= ROUND_MIN_RAISE) {
+      add(15, `First funding round: no earlier allotment raised ${money.format(ROUND_MIN_RAISE)} or more`)
+    }
+    if (funding?.earlierRound) {
+      const { raised, filedOn } = funding.earlierRound
+      add(-10, `Raised ${money.format(raised)} in an earlier round (${monthYear.format(new Date(filedOn))})`)
+    }
+    if (funding && funding.paperwork.length > 0) {
+      const filed = funding.paperwork.map((kind) => paperworkLabels[kind])
+      const list = filed.length > 1 ? `${filed.slice(0, -1).join(", ")} and ${filed.at(-1)}` : filed[0]
+      add(5, `Filed ${list} around the allotment, as priced rounds do`)
+    }
   }
   if (grants.length > 0) {
     add(25, grants.length > 1 ? `Won ${grants.length} Innovate UK grants` : "Won an Innovate UK grant")
@@ -206,12 +457,14 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
     ...row,
     score: Math.max(0, Math.min(score, 100)),
     reasons,
-    exclusion: exclusionFor(row, ageYears),
+    exclusion: exclusionFor(row, now),
     ageYears,
     grantTotal,
     raisedTotal,
     raisedUncertain,
     latestSignalOn,
+    people: peopleOf(row),
+    funding,
   }
 }
 

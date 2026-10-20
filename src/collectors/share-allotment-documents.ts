@@ -156,9 +156,52 @@ export async function readAllotment(bytes: Uint8Array): Promise<Allotment> {
 }
 
 /** The Document API metadata URL, whichever host the filing event linked it on. */
-function documentUrl(link: string) {
+export function documentUrl(link: string) {
   const id = link.split("/document/")[1]
   return id ? `${DOCUMENT_API}/${id}` : null
+}
+
+/**
+ * Asks for a filing's PDF. The content endpoint redirects to a signed download
+ * URL, which must be fetched without the Companies House key, so the redirect
+ * is followed by hand in downloadDocument().
+ */
+export function requestDocument(key: string, link: string) {
+  return fetch(`${documentUrl(link)}/content`, {
+    headers: { Authorization: basicAuth(key), Accept: "application/pdf" },
+    redirect: "manual",
+    signal: AbortSignal.timeout(15_000),
+  })
+}
+
+/** The PDF behind a requestDocument() response, "missing" when there is none, or why to try again later. */
+export async function downloadDocument(
+  key: string,
+  response: Response,
+): Promise<{ pdf: Uint8Array } | "missing" | { retry: string }> {
+  await response.body?.cancel()
+  if (response.status === 401) throw restKeyError(key)
+  if (response.status === 404) return "missing"
+  const location = response.headers.get("location")
+  if (!location) return { retry: `HTTP ${response.status}` }
+  const download = await fetch(location, { signal: AbortSignal.timeout(30_000) })
+  if (!download.ok) {
+    await download.body?.cancel()
+    return { retry: `download HTTP ${download.status}` }
+  }
+  const pdf = new Uint8Array(await download.arrayBuffer())
+  if (new TextDecoder().decode(pdf.subarray(0, 5)) !== "%PDF-") return { retry: "download was not a PDF" }
+  return { pdf }
+}
+
+/** readAllotment(), but a PDF pdf.js cannot open is "unparsed": it is no more readable next run. */
+export async function readAllotmentOrUnparsed(ctx: CollectorContext, label: string, pdf: Uint8Array): Promise<Allotment> {
+  try {
+    return await readAllotment(pdf)
+  } catch (error) {
+    ctx.log(`${label}: ${error instanceof Error ? error.message : String(error)}`)
+    return { status: "unparsed", version: ALLOTMENT_PARSER_VERSION, checkedAt: new Date().toISOString() }
+  }
 }
 
 type PendingRow = { id: number; company_number: string; transaction_id: string; document_url: string | null }
@@ -230,46 +273,20 @@ export async function readAllotmentDocuments(ctx: CollectorContext, key: string,
   const documentsPass = await eachRequest(
     linked,
     deadline,
-    // The content endpoint redirects to a signed download URL, which must be
-    // fetched without the Companies House key, so the redirect is followed by hand.
-    (row) =>
-      fetch(`${documentUrl(row.document_url!)}/content`, {
-        headers: { Authorization: basicAuth(key), Accept: "application/pdf" },
-        redirect: "manual",
-        signal: AbortSignal.timeout(15_000),
-      }),
+    (row) => requestDocument(key, row.document_url!),
     async (row, response) => {
-      await response.body?.cancel()
-      if (response.status === 401) throw restKeyError(key)
-      const location = response.headers.get("location")
-      if (response.status === 404) {
+      const label = `SH01 document for ${row.company_number}`
+      const result = await downloadDocument(key, response)
+      if (result === "missing") {
         await saveAllotment(row.id, noDocument())
         counts["no-document"]++
         return
       }
-      if (!location) {
-        ctx.log(`SH01 document for ${row.company_number}: HTTP ${response.status}, will retry next run.`)
+      if ("retry" in result) {
+        ctx.log(`${label}: ${result.retry}, will retry next run.`)
         return
       }
-      const download = await fetch(location, { signal: AbortSignal.timeout(30_000) })
-      if (!download.ok) {
-        await download.body?.cancel()
-        ctx.log(`SH01 document for ${row.company_number}: download HTTP ${download.status}, will retry next run.`)
-        return
-      }
-      const bytes = new Uint8Array(await download.arrayBuffer())
-      if (new TextDecoder().decode(bytes.subarray(0, 5)) !== "%PDF-") {
-        ctx.log(`SH01 document for ${row.company_number}: download was not a PDF, will retry next run.`)
-        return
-      }
-      let allotment: Allotment
-      try {
-        allotment = await readAllotment(bytes)
-      } catch (error) {
-        // A PDF pdf.js cannot open is no more readable next run.
-        ctx.log(`SH01 document for ${row.company_number}: ${error instanceof Error ? error.message : String(error)}`)
-        allotment = { status: "unparsed", version: ALLOTMENT_PARSER_VERSION, checkedAt: new Date().toISOString() }
-      }
+      const allotment = await readAllotmentOrUnparsed(ctx, label, result.pdf)
       await saveAllotment(row.id, allotment)
       counts[allotment.status]++
     },
