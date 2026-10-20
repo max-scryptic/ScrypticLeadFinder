@@ -30,6 +30,15 @@ const STREAM_SHARE = 0.5
 const ENRICH_SHARE = 0.75
 const FLUSH_EVERY = 100
 
+// When the stream phase counts as caught up during busy hours, when live
+// filings keep coming and no heartbeat arrives: a filing published this close
+// to now, or this long with nothing new after a backlog that arrives in one
+// continuous burst. Live filings already trail now by about a minute (the
+// 15:39 run on 2026-10-20 was 75 s behind at its deadline), and stopping a
+// little early only leaves those filings for the next run.
+const LIVE_MARGIN_MS = 120_000
+const IDLE_MS = 10_000
+
 type FilingEvent = {
   resource_kind?: string
   resource_uri?: string
@@ -142,13 +151,36 @@ export function toSignal(event: FilingEvent): SignalInput | null {
   }
 }
 
+/**
+ * published_at has no time zone ("2026-10-20T15:27:54") but is UTC: runs that
+ * reached live filings at 15:43 UTC on a BST day logged 15:42.
+ */
+function publishedTime(publishedAt: string | undefined) {
+  if (!publishedAt) return undefined
+  const time = Date.parse(/(Z|[+-]\d\d:?\d\d)$/i.test(publishedAt) ? publishedAt : `${publishedAt}Z`)
+  return Number.isNaN(time) ? undefined : time
+}
+
+/** Reads the next chunk, or resolves null when nothing arrives within `ms`. */
+async function readWithin(reader: ReadableStreamDefaultReader<Uint8Array>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const idle = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms)
+  })
+  try {
+    return await Promise.race([reader.read(), idle])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function openStream(key: string, timepoint: number | undefined, signal: AbortSignal) {
   const url = new URL(STREAM_URL)
   if (timepoint !== undefined) url.searchParams.set("timepoint", String(timepoint))
   return fetch(url, { headers: { Authorization: basicAuth(key) }, signal })
 }
 
-/** Phase 1: read the stream until the deadline or until it goes quiet. */
+/** Phase 1: read the stream until the deadline or until it reaches live filings. */
 async function readStream(ctx: CollectorContext, key: string, apiKey: string, deadline: number) {
   const state = await ctx.getState<{ timepoint: number }>()
   let timepoint = typeof state.timepoint === "number" ? state.timepoint : undefined
@@ -201,8 +233,18 @@ async function readStream(ctx: CollectorContext, key: string, apiKey: string, de
     const decoder = new TextDecoder()
     let buffer = ""
 
+    // published_at is not in timepoint order (it can jump back minutes), so
+    // compare the newest one seen so far.
+    let newestPublished = 0
+
     reading: while (true) {
-      const { done, value } = await reader.read()
+      // Wait without a limit until the first filing: connecting can be slow.
+      const chunk = eventsRead === 0 ? await reader.read() : await readWithin(reader, IDLE_MS)
+      if (!chunk) {
+        stopReason = `reached live filings (none for ${IDLE_MS / 1000} s)`
+        break
+      }
+      const { done, value } = chunk
       if (done) {
         stopReason = "stream closed by Companies House"
         break
@@ -236,6 +278,14 @@ async function readStream(ctx: CollectorContext, key: string, apiKey: string, de
           found++
         }
         if (matches.length >= FLUSH_EVERY) await flush()
+
+        // The timepoint already points past this filing, so the next run
+        // resumes right after it.
+        newestPublished = Math.max(newestPublished, publishedTime(event.event?.published_at) ?? 0)
+        if (Date.now() - newestPublished <= LIVE_MARGIN_MS) {
+          stopReason = `reached live filings (published within ${LIVE_MARGIN_MS / 60_000} minutes)`
+          break reading
+        }
       }
     }
     await reader.cancel().catch(() => {})
