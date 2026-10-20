@@ -21,6 +21,7 @@ export const GRANT_SOURCE = "ukri-innovate-uk-grants"
 export type LeadSignal = {
   sourceId: string
   title: string
+  /** Grant offer, or for a share allotment the cash it raised once its document is read. */
   amount: number | null
   currency: string | null
   occurredOn: string | null
@@ -29,6 +30,13 @@ export type LeadSignal = {
   grantStatus: string | null
   grantCategory: string | null
   role: string | null
+  /**
+   * Share allotments only: how reading the SH01 document went ("read",
+   * "no-text" for a scan, "unparsed", "no-document"), or null before it is read.
+   */
+  documentStatus: string | null
+  /** True when the filing's figures are ambiguous and the true raise may be far larger than `amount`. */
+  amountUncertain: boolean
 }
 
 export type LeadRow = {
@@ -55,6 +63,10 @@ export type Lead = LeadRow & {
   exclusion: string | null
   ageYears: number | null
   grantTotal: number
+  /** Cash raised by share allotments whose documents were read (GBP), or null when none were. */
+  raisedTotal: number | null
+  /** True when an allotment's figures were ambiguous, so `raisedTotal` may be too low. */
+  raisedUncertain: boolean
   latestSignalOn: string | null
 }
 
@@ -134,6 +146,13 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
   const sh01s = row.signals.filter((signal) => signal.sourceId === SH01_SOURCE)
   const grants = row.signals.filter((signal) => signal.sourceId === GRANT_SOURCE)
   const grantTotal = grants.reduce((sum, grant) => sum + (grant.amount ?? 0), 0)
+  // Only GBP counts towards the raise bands; a non-GBP raise shows on the signal but scores nothing.
+  const readSh01s = sh01s.filter((signal) => signal.documentStatus === "read")
+  const raisedTotal =
+    readSh01s.length > 0
+      ? readSh01s.reduce((sum, signal) => sum + (signal.currency === "GBP" ? Number(signal.amount ?? 0) : 0), 0)
+      : null
+  const raisedUncertain = readSh01s.some((signal) => signal.amountUncertain)
 
   let score = 0
   const reasons: string[] = []
@@ -146,6 +165,21 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
     add(30, sh01s.length > 1 ? `Filed ${sh01s.length} share allotments` : "Filed a share allotment")
     const latest = sh01s.map((signal) => signal.occurredOn).filter(Boolean).sort().at(-1)
     if (latest && now.getTime() - new Date(latest).getTime() <= 30 * DAY_MS) add(10, "Share allotment filed in the last 30 days")
+
+    // What the allotments raised, from their documents. Most SH01s are cap
+    // table changes (founder shares, a new co-founder, options) for a few
+    // pounds; a raise of thousands is a funding round.
+    if (raisedTotal !== null) {
+      const raised = `Raised ${raisedUncertain ? "at least " : ""}${money.format(raisedTotal)} in cash from new shares`
+      if (raisedTotal >= 250_000) add(25, raised)
+      else if (raisedTotal >= 50_000) add(20, raised)
+      else if (raisedTotal >= 10_000) add(10, raised)
+      // Only when every allotment was read and its figures are clear: an
+      // unread or ambiguous one could still be the round.
+      else if (raisedTotal < 1_000 && !raisedUncertain && readSh01s.length === sh01s.length) {
+        add(-15, raisedTotal === 0 ? "No cash raised from new shares" : `Only ${money.format(raisedTotal)} raised, so not a funding round`)
+      }
+    }
   }
   if (grants.length > 0) {
     add(25, grants.length > 1 ? `Won ${grants.length} Innovate UK grants` : "Won an Innovate UK grant")
@@ -153,7 +187,7 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
     if (grants.some((grant) => grant.grantStatus === "Active")) add(5, "Grant project is active")
     if (grants.some((grant) => grant.role === "LEAD_PARTICIPANT")) add(5, "Leads the grant project")
   }
-  if (sh01s.length > 0 && grants.length > 0) add(15, "Both raised money and won a grant")
+  if (sh01s.length > 0 && grants.length > 0) add(15, "Both issued shares and won a grant")
 
   if (ageYears !== null) {
     if (ageYears < 1) add(20, "Under a year old")
@@ -170,11 +204,13 @@ export function scoreLead(row: LeadRow, now = new Date()): Lead {
 
   return {
     ...row,
-    score: Math.min(score, 100),
+    score: Math.max(0, Math.min(score, 100)),
     reasons,
     exclusion: exclusionFor(row, ageYears),
     ageYears,
     grantTotal,
+    raisedTotal,
+    raisedUncertain,
     latestSignalOn,
   }
 }

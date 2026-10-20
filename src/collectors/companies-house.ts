@@ -57,7 +57,7 @@ export function describeKey(key: string) {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function restKeyError(key: string) {
+export function restKeyError(key: string) {
   return new CollectorConfigError(
     `Companies House rejected the REST API key (HTTP 401). Check COMPANIES_HOUSE_API_KEY is a "REST" key from a Live application. Key: ${describeKey(key)}.`,
   )
@@ -68,7 +68,7 @@ function restKeyError(key: string) {
  * until the items or the time run out. `handle` gets each response; returning
  * false stops early.
  */
-async function eachRequest<T>(
+export async function eachRequest<T>(
   items: T[],
   deadline: number,
   request: (item: T) => Promise<Response>,

@@ -29,10 +29,10 @@ export const sources = [
     provider: "Companies House",
     status: "live",
     signal:
-      "A young company filed an SH01, meaning it issued new shares. That usually means it just raised money.",
+      "A young company filed an SH01, meaning it issued new shares. When the shares were sold for real money, it just raised a round.",
     access: "Companies House Streaming API (filing history), enriched through the REST API.",
     details:
-      "Reads every new SH01 filing from the stream, then looks up each company's age, status and SIC codes. Companies incorporated in the last three years are shown by default.",
+      "Reads every new SH01 filing from the stream, then looks up each company's age, status and SIC codes, and reads the filing's document for the cash the shares were sold for. Companies incorporated in the last three years are shown by default.",
     homepage: "https://developer.company-information.service.gov.uk/",
   },
   {
