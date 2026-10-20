@@ -24,6 +24,8 @@ const columns: [string, (lead: Lead) => string | number | null | undefined][] = 
   ["Postcode", (lead) => lead.postcode],
   ["SIC codes", (lead) => lead.sic_codes?.join(" ")],
   ["Share allotments", (lead) => lead.signals.filter((signal) => signal.sourceId === SH01_SOURCE).length],
+  ["Raised from share allotments (GBP)", (lead) => lead.raisedTotal],
+  ["Raised amount uncertain", (lead) => (lead.raisedTotal === null ? null : lead.raisedUncertain ? "yes" : "no")],
   ["Grants", (lead) => lead.signals.filter((signal) => signal.sourceId === GRANT_SOURCE).length],
   ["Grant offers (GBP)", (lead) => lead.grantTotal || null],
   ["Grant projects", (lead) => lead.signals.filter((signal) => signal.sourceId === GRANT_SOURCE).map((signal) => signal.title).join("; ")],

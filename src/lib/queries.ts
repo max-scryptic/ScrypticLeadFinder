@@ -169,7 +169,9 @@ async function getLeadRows(days: number) {
               json_agg(json_build_object(
                 'sourceId', source_id, 'title', title, 'amount', amount, 'currency', currency,
                 'occurredOn', occurred_on, 'firstSeenAt', first_seen_at, 'url', url,
-                'grantStatus', data->>'status', 'grantCategory', data->>'grantCategory', 'role', data->>'role'
+                'grantStatus', data->>'status', 'grantCategory', data->>'grantCategory', 'role', data->>'role',
+                'documentStatus', data->'allotment'->>'status',
+                'amountUncertain', coalesce((data->'allotment'->>'uncertain')::boolean, false)
               ) ORDER BY coalesce(occurred_on, first_seen_at::date) DESC) AS signals
          FROM keyed
         GROUP BY lead_key

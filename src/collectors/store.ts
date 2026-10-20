@@ -6,6 +6,10 @@ import type { SignalInput } from "./types"
  * Signals are upserted in one round trip by passing the batch as a single
  * JSON parameter. `xmax = 0` is true only for rows this statement inserted,
  * which is how new signals are counted apart from ones seen before.
+ *
+ * A signal seen again keeps what was added to it after it was stored, such as
+ * the amount read from an SH01 document: `data` is merged rather than
+ * replaced, and a null amount does not overwrite a known one.
  */
 export async function saveSignals(sourceId: string, signals: SignalInput[]) {
   if (signals.length === 0) return { inserted: 0 }
@@ -39,11 +43,11 @@ export async function saveSignals(sourceId: string, signals: SignalInput[]) {
        company_number = coalesce(EXCLUDED.company_number, signals.company_number),
        title          = EXCLUDED.title,
        summary        = EXCLUDED.summary,
-       amount         = EXCLUDED.amount,
-       currency       = EXCLUDED.currency,
+       amount         = coalesce(EXCLUDED.amount, signals.amount),
+       currency       = coalesce(EXCLUDED.currency, signals.currency),
        occurred_on    = EXCLUDED.occurred_on,
        url            = EXCLUDED.url,
-       data           = EXCLUDED.data,
+       data           = signals.data || EXCLUDED.data,
        last_seen_at   = now()
      RETURNING (xmax = 0) AS inserted`,
     [JSON.stringify(rows)],

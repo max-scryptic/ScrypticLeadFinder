@@ -1,4 +1,5 @@
 import { basicAuth, describeKey, enrichCompanies, readKey, REST_URL } from "./companies-house"
+import { readAllotmentDocuments } from "./share-allotment-documents"
 import { CollectorConfigError, type Collector, type CollectorContext, type SignalInput } from "./types"
 
 /*
@@ -10,18 +11,23 @@ import { CollectorConfigError, type Collector, type CollectorContext, type Signa
  * replays whatever was missed (Companies House keeps a limited backlog and
  * answers 416 when the timepoint is too old).
  *
- * Each run has two phases inside its time budget:
+ * Each run has three phases inside its time budget:
  *   1. Stream: read events from the saved timepoint, keep the SH01s.
  *   2. Enrich: look up each new company once through the REST API (age, status,
  *      SIC codes, accounts type), cached in the companies table.
+ *   3. Documents: read each SH01 document for the cash the allotment raised
+ *      (see share-allotment-documents.ts).
  *
  * Docs: https://developer-specs.company-information.service.gov.uk/streaming-api/guides/overview
  */
 
 const STREAM_URL = "https://stream.companieshouse.gov.uk/filings"
 
-// Share of the run's time budget spent reading the stream; the rest enriches.
-const STREAM_SHARE = 0.6
+// Points in the run's time budget where the stream phase and then the enrich
+// phase stop; the rest reads documents. A phase that finishes early hands its
+// time to the next.
+const STREAM_SHARE = 0.5
+const ENRICH_SHARE = 0.75
 const FLUSH_EVERY = 100
 
 type FilingEvent = {
@@ -251,23 +257,27 @@ export const companiesHouseSh01Collector: Collector = {
   async run(ctx) {
     const streamKey = readKey("COMPANIES_HOUSE_STREAM_KEY")
     const apiKey = readKey("COMPANIES_HOUSE_API_KEY")
-    const budget = ctx.deadline - Date.now()
+    const start = Date.now()
+    const budget = ctx.deadline - start
 
-    const stream = await readStream(ctx, streamKey, apiKey, Date.now() + budget * STREAM_SHARE)
-    const enrich = await enrichCompanies(ctx, apiKey, ctx.deadline)
+    const stream = await readStream(ctx, streamKey, apiKey, start + budget * STREAM_SHARE)
+    const enrich = await enrichCompanies(ctx, apiKey, start + budget * ENRICH_SHARE)
+    const documents = await readAllotmentDocuments(ctx, apiKey, ctx.deadline)
 
     const parts = [
       `${stream.inserted} new SH01 from ${stream.eventsRead} filings`,
       `${enrich.fetched} companies looked up`,
+      `${documents.read} documents read`,
     ]
-    if (enrich.remaining > 0) parts.push(`${enrich.remaining} still to look up`)
+    if (enrich.remaining > 0) parts.push(`${enrich.remaining} companies still to look up`)
+    if (documents.remaining > 0) parts.push(`${documents.remaining} documents still to read`)
     if (stream.warning) parts.push(stream.warning)
 
     return {
       itemsSeen: stream.found,
       itemsNew: stream.inserted,
       message: `${parts.join(", ")}.`,
-      stats: { stream, enrich },
+      stats: { stream, enrich, documents },
     }
   },
 }

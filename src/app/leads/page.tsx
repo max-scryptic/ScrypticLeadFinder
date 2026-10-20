@@ -18,6 +18,7 @@ import {
   SH01_SOURCE,
   type Lead,
   type LeadFilters,
+  type LeadSignal,
 } from "@/lib/leads"
 import { getLeads, type LeadList } from "@/lib/queries"
 import { createMetadata, pages } from "@/lib/seo"
@@ -210,7 +211,10 @@ function LeadTableRow({ lead }: { lead: Lead }) {
           {sh01s.length > 0 && (
             <SignalItem
               label={sh01s.length > 1 ? `${sh01s.length} share allotments` : "Share allotment"}
-              details={[sh01s[0].occurredOn ? `latest filed ${formatDate(sh01s[0].occurredOn)}` : null]}
+              details={[
+                sh01s[0].occurredOn ? `latest filed ${formatDate(sh01s[0].occurredOn)}` : null,
+                raisedDetail(lead, sh01s),
+              ]}
             />
           )}
           {grants.slice(0, 3).map((grant, index) => (
@@ -238,6 +242,23 @@ function LeadTableRow({ lead }: { lead: Lead }) {
       </TableCell>
     </TableRow>
   )
+}
+
+/** What the share allotments raised, or why that is not known. */
+function raisedDetail(lead: Lead, sh01s: LeadSignal[]) {
+  const unread = sh01s.filter((signal) => signal.documentStatus !== "read")
+  const parts = []
+  if (lead.raisedTotal !== null) {
+    parts.push(`${lead.raisedUncertain ? "at least " : ""}${formatMoney(lead.raisedTotal)} raised`)
+  }
+  if (unread.length > 0) {
+    // A scanned paper filing has no text to read, so its amount stays unknown.
+    const scanned = unread.every((signal) => signal.documentStatus === "no-text")
+    const count = sh01s.length > 1 ? `${unread.length} ` : ""
+    const many = unread.length > 1
+    parts.push(scanned ? `${count}scanned filing${many ? "s" : ""}, amount unknown` : `${count || "amount "}not read yet`)
+  }
+  return parts.join(" · ")
 }
 
 function SignalItem({
