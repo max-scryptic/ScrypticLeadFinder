@@ -199,7 +199,7 @@ function SignalTableRow({ signal, isSh01 }: { signal: SignalRow; isSh01: boolean
         signal.locality,
         signal.company_status && signal.company_status !== "active" ? signal.company_status : null,
       ]
-    : [String(signal.data.grantCategory ?? "")]
+    : [String(signal.data.grantCategory ?? ""), formatAge(signal.date_of_creation), signal.locality]
 
   return (
     <TableRow className="align-top">

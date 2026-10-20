@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 
-// The Sources gallery is the app's starting point for now.
+// The Leads list is the app's starting point.
 export default function Home() {
-  redirect("/sources")
+  redirect("/leads")
 }

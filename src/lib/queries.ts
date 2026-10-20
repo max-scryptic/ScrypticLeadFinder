@@ -1,10 +1,11 @@
 import { connection } from "next/server"
 
 import { db } from "@/lib/db"
+import { matchesSource, scoreLead, type Lead, type LeadFilters, type LeadRow, type LeadStatus } from "@/lib/leads"
 
 /*
- * Reads for the Sources pages. Each calls connection() so the page renders
- * per request instead of being prerendered with build-time data.
+ * Reads for the Sources and Leads pages. Each calls connection() so the page
+ * renders per request instead of being prerendered with build-time data.
  */
 
 export type RunRow = {
@@ -113,4 +114,82 @@ export async function getRecentSignals(
       LIMIT $2`,
     params,
   )) as SignalRow[]
+}
+
+export type LeadList = {
+  leads: Lead[]
+  /** Leads per status, after the source and exclusion filters. */
+  statusCounts: Record<LeadStatus | "all", number>
+  /** Leads the exclusion rules hid, after the status and source filters. */
+  excludedCount: number
+}
+
+/** Scores every lead in the window and applies the filters, best first. */
+export async function getLeads(filters: LeadFilters): Promise<LeadList> {
+  const scored = (await getLeadRows(filters.days)).map((row) => scoreLead(row))
+  const visible = scored.filter(
+    (lead) => matchesSource(lead, filters.source) && (filters.showExcluded || !lead.exclusion),
+  )
+
+  const statusCounts = { all: visible.length, new: 0, contacted: 0, qualified: 0, rejected: 0 }
+  for (const lead of visible) statusCounts[lead.status]++
+
+  const inStatus = (lead: Lead) => filters.status === "all" || lead.status === filters.status
+  const excludedCount = scored.filter(
+    (lead) => lead.exclusion && inStatus(lead) && matchesSource(lead, filters.source),
+  ).length
+
+  const leads = visible
+    .filter(inStatus)
+    .sort(
+      (a, b) =>
+        Number(Boolean(a.exclusion)) - Number(Boolean(b.exclusion)) ||
+        b.score - a.score ||
+        (b.latestSignalOn ?? "").localeCompare(a.latestSignalOn ?? ""),
+    )
+
+  return { leads, statusCounts, excludedCount }
+}
+
+async function getLeadRows(days: number) {
+  await connection()
+  // Every signal of a company counts towards its score, but only companies
+  // with a signal found inside the window are listed.
+  return (await db().query(
+    `WITH keyed AS (
+       SELECT coalesce(s.company_number, 'name:' || s.company_name) AS lead_key, s.*
+         FROM signals s
+        WHERE s.company_number IS NOT NULL OR s.company_name IS NOT NULL
+     ),
+     grouped AS (
+       SELECT lead_key,
+              max(company_number) AS company_number,
+              max(company_name) AS signal_company_name,
+              max(first_seen_at) AS last_found_at,
+              json_agg(json_build_object(
+                'sourceId', source_id, 'title', title, 'amount', amount, 'currency', currency,
+                'occurredOn', occurred_on, 'firstSeenAt', first_seen_at, 'url', url,
+                'grantStatus', data->>'status', 'grantCategory', data->>'grantCategory', 'role', data->>'role'
+              ) ORDER BY coalesce(occurred_on, first_seen_at::date) DESC) AS signals
+         FROM keyed
+        GROUP BY lead_key
+       HAVING max(first_seen_at) > now() - make_interval(days => $1)
+     )
+     SELECT g.lead_key, g.company_number, coalesce(c.name, g.signal_company_name) AS company_name,
+            c.status AS company_status, c.type AS company_type, c.date_of_creation, c.sic_codes,
+            c.locality, c.postcode, c.accounts_type, c.found AS company_found,
+            g.last_found_at, g.signals, coalesce(ls.status, 'new') AS status
+       FROM grouped g
+       LEFT JOIN companies c ON c.company_number = g.company_number
+       LEFT JOIN lead_status ls ON ls.lead_key = g.lead_key`,
+    [days],
+  )) as LeadRow[]
+}
+
+export async function saveLeadStatus(leadKey: string, status: LeadStatus) {
+  await db().query(
+    `INSERT INTO lead_status (lead_key, status, updated_at) VALUES ($1, $2, now())
+     ON CONFLICT (lead_key) DO UPDATE SET status = EXCLUDED.status, updated_at = now()`,
+    [leadKey, status],
+  )
 }

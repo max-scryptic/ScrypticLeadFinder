@@ -53,6 +53,13 @@ export const pages = {
     changeFrequency: "yearly",
     priority: 0.5,
   },
+  leads: {
+    path: "/leads",
+    title: "Leads",
+    description:
+      "The companies most likely to need an MVP built, one row per company, scored from every lead source, with holding, dormant and large companies filtered out.",
+    noIndex: true,
+  },
   sources: {
     path: "/sources",
     title: "Sources",
