@@ -316,6 +316,9 @@ function isDirectory(host: string) {
   return DIRECTORY_HOSTS.some((directory) => host === directory || host.endsWith(`.${directory}`))
 }
 
+// Fails the run rather than one company: every search after it would fail too.
+class BadSearchKey extends Error {}
+
 type SearchOutcome = { hosts: string[] } | { stop: string } | { retry: string }
 
 async function braveSearch(key: string, query: string): Promise<SearchOutcome> {
@@ -333,7 +336,7 @@ async function braveSearch(key: string, query: string): Promise<SearchOutcome> {
     if (response.status !== 401 && (response.status !== 403 || /LIMIT|QUOTA/.test(code))) {
       return { stop: `Brave returned HTTP ${response.status} (${code})` }
     }
-    throw new Error(`Brave rejected BRAVE_SEARCH_API_KEY (HTTP ${response.status}, ${code}).`)
+    throw new BadSearchKey(`Brave rejected BRAVE_SEARCH_API_KEY (HTTP ${response.status}, ${code}).`)
   }
   if (!response.ok) {
     await response.body?.cancel()
@@ -387,7 +390,7 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
     [FINDER_VERSION, RECHECK_DAYS, searchesLeft > 0],
   )) as Company[]
 
-  const counts = { guess: 0, search: 0, none: 0, searches: 0 }
+  const counts = { guess: 0, search: 0, none: 0, failed: 0, searches: 0 }
   let next = 0
   let done = 0
   let nextSearchAt = 0
@@ -479,7 +482,15 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
         stopReason = "time budget used up"
         return
       }
-      await lookUp(pending[next++])
+      const company = pending[next++]
+      try {
+        await lookUp(company)
+      } catch (error) {
+        // One company's failure (a rejected write, a broken page) should not end the run.
+        if (error instanceof BadSearchKey) throw error
+        counts.failed++
+        log(`${company.company_number}: lookup failed, will retry next run. ${error instanceof Error ? error.message : error}`)
+      }
       done++
     }
   }
@@ -489,7 +500,7 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
   const remaining = pending.length - done
   log(
     `Found websites for ${counts.guess + counts.search} companies (${counts.guess} by guessing, ${counts.search} by search, ` +
-      `${counts.none} none found, ${counts.searches} searches, ${remaining} left). Stopped: ${stopReason}.`,
+      `${counts.none} none found, ${counts.failed} failed, ${counts.searches} searches, ${remaining} left). Stopped: ${stopReason}.`,
   )
   return { ...counts, remaining, stopReason }
 }

@@ -13,8 +13,24 @@ export function db() {
     const url = process.env.DATABASE_URL
     if (!url) throw new Error("DATABASE_URL is not set. Add it to .env.local.")
     client = neon(url)
+    const query = client.query
+    client.query = ((text, params, options) => query(text, params?.map(withoutNul), options)) as typeof query
   }
   return client
+}
+
+/*
+ * Postgres rejects NUL in text, and its JSON escape in jsonb, failing the whole
+ * query. Fetched web pages sometimes contain one, so every parameter loses
+ * them on the way in. In JSON, "\\u0000" is a literal backslash and stays.
+ */
+function withoutNul(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\0/g, "").replace(/(\\+)u0000/g, (match, slashes: string) =>
+      slashes.length % 2 ? slashes.slice(1) : match,
+    )
+  }
+  return Array.isArray(value) ? value.map(withoutNul) : value
 }
 
 export function hasDatabase() {
