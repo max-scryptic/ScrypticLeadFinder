@@ -22,6 +22,8 @@ import {
   type LeadFilters,
   type LeadSignal,
   type Person,
+  linkedInProfileFor,
+  type SiteDetails,
 } from "@/lib/leads"
 import { PAGE_SIZE, pageCount, parsePage } from "@/lib/pagination"
 import { getLeads, type LeadList } from "@/lib/queries"
@@ -33,6 +35,18 @@ export const metadata = createMetadata(pages.leads)
 
 // Decision makers listed under each company; the rest are counted.
 const PEOPLE_SHOWN = 4
+// Website email addresses listed under each company.
+const EMAILS_SHOWN = 2
+
+const socialLabels = {
+  linkedin: "LinkedIn",
+  x: "X",
+  github: "GitHub",
+  facebook: "Facebook",
+  instagram: "Instagram",
+  youtube: "YouTube",
+  tiktok: "TikTok",
+}
 
 const statusLabels = { all: "All", new: "New", contacted: "Contacted", qualified: "Qualified", rejected: "Rejected" }
 
@@ -228,14 +242,17 @@ function LeadTableRow({ lead }: { lead: Lead }) {
                 (likely)
               </span>
             )}
+            {lead.website_details && <SiteFacts details={lead.website_details} />}
           </div>
         )}
+        {lead.website_details && <ContactLinks details={lead.website_details} />}
         {lead.people.length > 0 && (
           <ul className="mt-1.5 flex flex-col gap-0.5 text-xs" aria-label={`Decision makers at ${name}`}>
             {lead.people.slice(0, PEOPLE_SHOWN).map((person) => (
               <li key={person.name}>
                 <span className="font-medium">{person.name}</span>
                 <span className="text-muted-foreground"> · {personDetail(person)}</span>
+                <PersonLinkedIn url={linkedInProfileFor(person, lead.website_details?.socials ?? [])} />
               </li>
             ))}
             {lead.people.length > PEOPLE_SHOWN && (
@@ -317,6 +334,75 @@ function fundingDetail(funding: FundingHistory | null) {
   }
   if (funding.kind === "first") return "no earlier funding round"
   return "earlier rounds not checked yet"
+}
+
+/** What the site is built with, whether it has launched, and links to its app and login. */
+function SiteFacts({ details }: { details: SiteDetails }) {
+  const links = [
+    ...details.appLinks.map((url) => ({ url, label: url.includes("apple.com") ? "App Store" : "Google Play" })),
+    ...(details.loginUrl ? [{ url: details.loginUrl, label: "login" }] : []),
+  ]
+  return (
+    <span className="text-muted-foreground">
+      {details.builder && ` · ${details.builder}`}
+      {details.preLaunch && (
+        <span title="The homepage says the product is not out yet"> · says &ldquo;{details.preLaunch}&rdquo;</span>
+      )}
+      {links.map((link) => (
+        <span key={link.url}>
+          {" · "}
+          <a className="underline-offset-4 hover:underline" href={link.url} target="_blank" rel="noreferrer">
+            {link.label}
+          </a>
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** A decision maker's LinkedIn profile, when their company's website links it. */
+function PersonLinkedIn({ url }: { url: string | null }) {
+  if (!url) return null
+  return (
+    <>
+      {" · "}
+      <a className="underline-offset-4 hover:underline" href={url} target="_blank" rel="noreferrer">
+        LinkedIn
+      </a>
+    </>
+  )
+}
+
+/**
+ * Email addresses, a phone number and the company's own profiles from its
+ * website. People's LinkedIn profiles show next to the decision makers they
+ * match instead; the CSV has them all.
+ */
+function ContactLinks({ details }: { details: SiteDetails }) {
+  const links = [
+    ...details.emails.slice(0, EMAILS_SHOWN).map((email) => ({ href: `mailto:${email}`, label: email, external: false })),
+    ...details.phones.slice(0, 1).map((phone) => ({ href: `tel:${phone.replace(/\s/g, "")}`, label: phone, external: false })),
+    ...details.socials
+      .filter((social) => !social.url.includes("linkedin.com/in/"))
+      .map((social) => ({ href: social.url, label: socialLabels[social.kind], external: true })),
+  ]
+  if (links.length === 0) return null
+  return (
+    <p className="text-xs">
+      {links.map((link, index) => (
+        <span key={link.href}>
+          {index > 0 && <span className="text-muted-foreground"> · </span>}
+          <a
+            className="underline-offset-4 hover:underline"
+            href={link.href}
+            {...(link.external && { target: "_blank", rel: "noreferrer" })}
+          >
+            {link.label}
+          </a>
+        </span>
+      ))}
+    </p>
+  )
 }
 
 /** Role and stake, such as "Director, owns 75 to 100%", plus an occupation that says more than the role. */

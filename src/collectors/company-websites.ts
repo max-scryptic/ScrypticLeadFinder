@@ -1,6 +1,8 @@
 import { promises as dns } from "node:dns"
 
+import { siteDetails } from "@/collectors/website-details"
 import { db } from "@/lib/db"
+import type { SiteDetails } from "@/lib/leads"
 import { siteUrl } from "@/lib/site"
 
 /*
@@ -22,6 +24,10 @@ import { siteUrl } from "@/lib/site"
  *     nothing more. Weaker, so the Leads page marks it as likely.
  * So a guessed domain that belongs to someone else, or a parked one, is not taken.
  *
+ * Once a site is found, its contact and privacy pages are read too, and
+ * website-details.ts picks contact details, profiles, the site builder and
+ * pre-launch wording out of the pages' HTML.
+ *
  * Only companies the lead rules do not exclude are looked up: those whose
  * officers have been fetched (company-history.ts leaves excluded ones null).
  * A company with no site found is looked up again after RECHECK_DAYS, since
@@ -32,6 +38,9 @@ import { siteUrl } from "@/lib/site"
 
 // Bump when what is stored changes, so companies are looked up again.
 const FINDER_VERSION = 1
+// Bump when website-details.ts reads more, so found sites are read again
+// without guessing or searching for them again.
+const DETAILS_VERSION = 1
 
 const RECHECK_DAYS = 60
 
@@ -93,15 +102,21 @@ const FOR_SALE =
 // Links on a homepage worth reading for the company number.
 const LEGAL_LINK = /privacy|terms|legal|imprint|impressum|contact|about|company/i
 const LEGAL_PAGES_READ = 3
+// Pages read for contact details once a site is found, on top of those that proved it.
+const DETAIL_LINKS = [/contact/i, /privacy/i, /about|team/i]
+const DETAIL_PAGES_READ = 2
 
 export const evidenceKinds = ["company-number", "registered-name", "brand-name"] as const
 export type Evidence = (typeof evidenceKinds)[number]
 
 type Company = { company_number: string; name: string }
 
-type Page = { url: string; html: string; text: string }
+type PendingCompany = Company & { url: string | null; finder_version: number | null }
 
-export type FoundSite = { url: string; title: string | null; evidence: Evidence; pageText: string }
+export type Page = { url: string; html: string; text: string }
+
+/** `pages` are those read, the homepage first. */
+export type FoundSite = { url: string; title: string | null; evidence: Evidence; pageText: string; pages: Page[] }
 
 /** The registered name without its legal suffix: "Pyroptik Instruments Limited" is "Pyroptik Instruments". */
 export function baseName(name: string) {
@@ -219,8 +234,8 @@ function titleOf(html: string) {
   return title || null
 }
 
-/** Same-site links from a page to its privacy, terms, about or contact pages. */
-function legalLinks(page: Page) {
+/** Same-site links from a page whose path matches, such as its privacy, terms, about or contact pages. */
+function siteLinks(page: Page, pattern: RegExp) {
   const base = new URL(page.url)
   const links = new Set<string>()
   for (const match of page.html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)/gi)) {
@@ -231,11 +246,11 @@ function legalLinks(page: Page) {
       continue
     }
     if (link.hostname.replace(/^www\./, "") !== base.hostname.replace(/^www\./, "")) continue
-    if (!/^https?:$/.test(link.protocol) || !LEGAL_LINK.test(link.pathname)) continue
+    if (!/^https?:$/.test(link.protocol) || !pattern.test(link.pathname)) continue
     link.search = ""
     if (link.href !== page.url) links.add(link.href)
   }
-  return [...links].slice(0, LEGAL_PAGES_READ)
+  return [...links]
 }
 
 /** A page's HTML, following redirects and one meta refresh (how many domain forwards work). */
@@ -268,7 +283,7 @@ async function checkSite(startUrl: string, company: Company): Promise<FoundSite 
   const pages = [home]
   let evidence = evidenceIn(home.text, company, host)
   if (evidence !== "company-number") {
-    for (const link of legalLinks(home)) {
+    for (const link of siteLinks(home, LEGAL_LINK).slice(0, LEGAL_PAGES_READ)) {
       const page = await fetchPage(link)
       if (!page) continue
       pages.push(page)
@@ -282,7 +297,18 @@ async function checkSite(startUrl: string, company: Company): Promise<FoundSite 
     title: titleOf(home.html),
     evidence,
     pageText: pages.map((page) => `[${page.url}] ${page.text}`).join("\n\n").slice(0, MAX_PAGE_TEXT_CHARS),
+    pages,
   }
+}
+
+/** A found site's details (see website-details.ts), reading its contact and privacy pages when not read yet. */
+async function readDetails(pages: Page[], title: string | null): Promise<SiteDetails> {
+  const [home] = pages
+  const read = new Set(pages.map((page) => page.url))
+  const links = [...new Set(DETAIL_LINKS.flatMap((pattern) => siteLinks(home, pattern)))].filter((link) => !read.has(link))
+  const extra = await Promise.all(links.slice(0, DETAIL_PAGES_READ).map((link) => fetchPage(link)))
+  const all = [...pages, ...extra.filter((page): page is Page => page !== null)]
+  return siteDetails(all, registrableDomain(new URL(home.url).hostname), title)
 }
 
 async function resolves(host: string) {
@@ -375,7 +401,7 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
   // A company with no site that was never searched for (no key yet, or the
   // allowance was used up) is looked up again as soon as searching is possible.
   const pending = (await sql.query(
-    `SELECT c.company_number, c.name
+    `SELECT c.company_number, c.name, w.url, w.finder_version
        FROM companies c
        JOIN (SELECT company_number, max(first_seen_at) AS last_seen FROM signals
               WHERE first_seen_at > now() - interval '365 days' GROUP BY company_number) s
@@ -384,13 +410,14 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
       WHERE c.found AND c.officers IS NOT NULL AND c.name IS NOT NULL
         AND (w.company_number IS NULL OR w.finder_version < $1
              OR (w.url IS NULL AND w.checked_at < now() - make_interval(days => $2))
-             OR (w.url IS NULL AND w.searched_at IS NULL AND $3))
+             OR (w.url IS NULL AND w.searched_at IS NULL AND $3)
+             OR (w.url IS NOT NULL AND coalesce(w.details_version, 0) < $4))
       ORDER BY (w.company_number IS NULL) DESC, s.last_seen DESC
       LIMIT 1000`,
-    [FINDER_VERSION, RECHECK_DAYS, searchesLeft > 0],
-  )) as Company[]
+    [FINDER_VERSION, RECHECK_DAYS, searchesLeft > 0, DETAILS_VERSION],
+  )) as PendingCompany[]
 
-  const counts = { guess: 0, search: 0, none: 0, failed: 0, searches: 0 }
+  const counts = { guess: 0, search: 0, none: 0, failed: 0, searches: 0, reread: 0 }
   let next = 0
   let done = 0
   let nextSearchAt = 0
@@ -406,7 +433,22 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
     return braveSearch(key!, query)
   }
 
-  async function lookUp(company: Company) {
+  // A site found before details were read, or by an older version: read it
+  // again for its details only. A site that no longer loads keeps its row and
+  // gets empty details, so it is not fetched on every run.
+  async function rereadDetails(company: PendingCompany & { url: string }) {
+    const home = await fetchPage(`${company.url}/`)
+    const details = home ? await readDetails([home], titleOf(home.html)) : null
+    await sql.query("UPDATE company_websites SET details = $2::jsonb, details_version = $3 WHERE company_number = $1", [
+      company.company_number,
+      details && JSON.stringify(details),
+      DETAILS_VERSION,
+    ])
+    counts.reread++
+  }
+
+  async function lookUp(company: PendingCompany) {
+    if (company.url && company.finder_version === FINDER_VERSION) return rereadDetails({ ...company, url: company.url })
     const tried = new Set<string>()
     let site = await findByGuess(company, tried)
     let method: "guess" | "search" | null = site ? "guess" : null
@@ -444,6 +486,7 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
                 url: new URL(home.url).origin,
                 title: titleOf(home.html) ?? site.title,
                 pageText: `[${home.url}] ${home.text}\n\n${site.pageText}`.slice(0, MAX_PAGE_TEXT_CHARS),
+                pages: [home, ...site.pages],
               }
             }
           }
@@ -455,13 +498,16 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
       }
     }
 
+    const details = site ? await readDetails(site.pages, site.title) : null
     await sql.query(
-      `INSERT INTO company_websites (company_number, url, method, evidence, title, page_text, finder_version, checked_at, searched_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), CASE WHEN $8 THEN now() END)
+      `INSERT INTO company_websites
+              (company_number, url, method, evidence, title, page_text, finder_version, checked_at, searched_at, details, details_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, now(), CASE WHEN $8 THEN now() END, $9::jsonb, $10)
        ON CONFLICT (company_number) DO UPDATE
           SET url = EXCLUDED.url, method = EXCLUDED.method, evidence = EXCLUDED.evidence, title = EXCLUDED.title,
               page_text = EXCLUDED.page_text, finder_version = EXCLUDED.finder_version, checked_at = now(),
-              searched_at = coalesce(EXCLUDED.searched_at, company_websites.searched_at)`,
+              searched_at = coalesce(EXCLUDED.searched_at, company_websites.searched_at),
+              details = EXCLUDED.details, details_version = EXCLUDED.details_version`,
       [
         company.company_number,
         site?.url ?? null,
@@ -471,6 +517,8 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
         site?.pageText ?? null,
         FINDER_VERSION,
         searched,
+        details && JSON.stringify(details),
+        DETAILS_VERSION,
       ],
     )
     counts[method ?? "none"]++
@@ -500,7 +548,8 @@ export async function findCompanyWebsites(log: (message: string) => void, deadli
   const remaining = pending.length - done
   log(
     `Found websites for ${counts.guess + counts.search} companies (${counts.guess} by guessing, ${counts.search} by search, ` +
-      `${counts.none} none found, ${counts.failed} failed, ${counts.searches} searches, ${remaining} left). Stopped: ${stopReason}.`,
+      `${counts.none} none found, ${counts.failed} failed, ${counts.searches} searches, ${counts.reread} found sites read again ` +
+      `for details, ${remaining} left). Stopped: ${stopReason}.`,
   )
   return { ...counts, remaining, stopReason }
 }
