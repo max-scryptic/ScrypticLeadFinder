@@ -85,6 +85,28 @@ export type CompanyFilings = {
   truncated: boolean
 }
 
+export type SocialKind = "linkedin" | "x" | "github" | "facebook" | "instagram" | "youtube" | "tiktok"
+
+export type SocialLink = { kind: SocialKind; url: string }
+
+/** What a lead's website says beyond proving it is theirs. Read by src/collectors/website-details.ts. */
+export type SiteDetails = {
+  /** Addresses shown or linked on the site, those on its own domain first. */
+  emails: string[]
+  /** UK numbers in national format, such as "020 7946 0000". */
+  phones: string[]
+  /** The company's profiles, and its founders' LinkedIn profiles when the site links them. */
+  socials: SocialLink[]
+  /** App Store and Google Play listings. */
+  appLinks: string[]
+  /** A link to log in to the product, which a company with something live usually has. */
+  loginUrl: string | null
+  /** What the site is built with: "Webflow", "Wix", "WordPress", "Next.js", ...; null when nothing gives it away. */
+  builder: string | null
+  /** The phrase saying the product is not out yet, such as "coming soon" or "join the waitlist". */
+  preLaunch: string | null
+}
+
 export type LeadRow = {
   lead_key: string
   company_number: string | null
@@ -105,9 +127,46 @@ export type LeadRow = {
   website_url: string | null
   /** What proved the website is the company's: "company-number", "registered-name" or the weaker "brand-name". */
   website_evidence: string | null
+  /** What the website says beyond proving it is theirs; null until it is read. */
+  website_details: SiteDetails | null
   last_found_at: Date
   signals: LeadSignal[]
   status: LeadStatus
+}
+
+/** The words of a name for matching: lower case, without accents or apostrophes. */
+function nameWords(text: string) {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’]/g, "")
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter(Boolean)
+}
+
+/**
+ * The person's LinkedIn profile among those their company's website links:
+ * the one whose address has their first name and surname, as most do
+ * ("linkedin.com/in/esther-baer-1a2b3c").
+ */
+export function linkedInProfileFor(person: Person, socials: SocialLink[]) {
+  const words = nameWords(person.name)
+  if (words.length < 2) return null
+  const [first, last] = [words[0], words.at(-1)!]
+  for (const social of socials) {
+    const slug = /linkedin\.com\/in\/([^/?]+)/.exec(social.url)?.[1]
+    if (!slug) continue
+    let readable = slug
+    try {
+      readable = decodeURIComponent(slug)
+    } catch {
+      // Broken percent-encoding: match the slug as it is.
+    }
+    const parts = nameWords(readable)
+    if (parts.includes(first) && parts.includes(last)) return social.url
+  }
+  return null
 }
 
 /** A decision maker: a current director or LLP member, or an individual who controls the company, merged when both. */

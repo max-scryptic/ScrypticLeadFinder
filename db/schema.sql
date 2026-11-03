@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS company_websites (
 );
 
 CREATE INDEX IF NOT EXISTS company_websites_searched_idx ON company_websites (searched_at);
+-- What the site says beyond proving it is the company's (contact details,
+-- profiles, what it is built with, whether it has launched), as a SiteDetails
+-- in src/lib/leads.ts. Read by src/collectors/website-details.ts; null until
+-- read, and details_version says which version of that code read it.
+ALTER TABLE company_websites ADD COLUMN IF NOT EXISTS details jsonb;
+ALTER TABLE company_websites ADD COLUMN IF NOT EXISTS details_version smallint;
 
 -- Triage status of a lead. lead_key is the company number, or 'name:' plus the
 -- company name for a lead not matched to Companies House. Leads without a row
